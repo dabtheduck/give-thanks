@@ -96,6 +96,12 @@ const state = {
   today: { version: DATA_VERSION, date: todayKey(), count: 0, notes: [] },
   settings: { version: DATA_VERSION, timezone: DEFAULT_TZ, notificationsOn: true, notifyOnlyIfEmpty: true, gardenOptIn: false, groupGardens: [], features: { gardenWeeklyShare: false, newRecapFormat: false, shareOutsideTelegram: true } },
   gardenId: 'personal',
+  // Undo history: one entry per press, in press order. true = that press had
+  // a note, false = count-only press. Without it, undo can't tell whether
+  // the last press was a note (remove it) or a bare press (just -1 count).
+  // Saved in gt_today_meta alongside the count; old installs without it
+  // rebuild a safe fallback in loadToday() (notes preserved first).
+  pressHistory: [],
 };
 try { state.gardenId = new URLSearchParams(location.search).get('startapp') ? new URLSearchParams(location.search).get('startapp').replace('garden_', '') : 'personal'; } catch (e) {}
 
@@ -178,14 +184,29 @@ async function loadToday() {
     const meta = await csGet('gt_today_meta');
     if (meta) {
       try {
-        const m = migrateToday(JSON.parse(meta));
+        const rawMeta = JSON.parse(meta);
+        const m = migrateToday(rawMeta);
         if (m.date === state.today.date) {
           state.today.count = m.count || 0;
+          // Restore undo history if this install saved it; otherwise mark it
+          // to be rebuilt from the notes once they finish loading below.
+          if (Array.isArray(rawMeta.pressHistory) && rawMeta.pressHistory.every(v => typeof v === 'boolean')) {
+            state.pressHistory = rawMeta.pressHistory.slice(0, Math.max(state.today.count, 0));
+          } else {
+            state.pressHistory = null;
+          }
           state.today.notes = [];
           for (let i = 1; i <= 10; i++) {
             const chunk = await csGet('gt_today_notes_' + i);
             if (!chunk) break;
             try { state.today.notes.push.apply(state.today.notes, JSON.parse(chunk)); } catch (e) {}
+          }
+          if (state.pressHistory === null) {
+            // Old install, no saved history: notes first, count-only presses
+            // last, so an undo after reload takes a bare press off before
+            // touching a note.
+            const bare = Math.max(0, state.today.count - state.today.notes.length);
+            state.pressHistory = state.today.notes.map(() => true).concat(Array(bare).fill(false));
           }
           render(); return;
         }
@@ -195,6 +216,7 @@ async function loadToday() {
     }
   } catch (e) { /* keep defaults, never crash */ }
   state.today = { version: DATA_VERSION, date: state.today.date, count: 0, notes: [] };
+  state.pressHistory = [];
   saveTodayBackground();
   render();
 }
@@ -203,7 +225,7 @@ function saveTodayBackground() {
   // roll back or hide the count.
   (async () => {
     try {
-      await csSet('gt_today_meta', JSON.stringify({ version: DATA_VERSION, date: state.today.date, count: state.today.count }));
+      await csSet('gt_today_meta', JSON.stringify({ version: DATA_VERSION, date: state.today.date, count: state.today.count, pressHistory: state.pressHistory }));
       const chunks = []; let cur = [];
       for (const n of state.today.notes) {
         const test = cur.concat([n]);
@@ -266,13 +288,18 @@ function render() {
     setText('plantStage', STAGES[plantIndex(state.today.count)] + ' • ' + state.today.count + ' thanks today');
     const list = el('notesList');
     if (list) {
-      list.innerHTML = state.today.notes.map((n, i) => '<li><label class="share-check"><input type="checkbox" data-share="' + i + '"' + (n.shareable ? ' checked' : '') + '> share</label> <b>#' + (i + 1) + '</b> ' + escapeHtml(n.time || '') + ' — <span class="' + (n.shareable ? '' : 'private-note') + '">' + escapeHtml(n.text) + '</span></li>').reverse().join('');
+      list.innerHTML = state.today.notes.map((n, i) => '<li><button class="delete-note" data-delete="' + i + '" title="Delete this thanks" aria-label="Delete this thanks">×</button><label class="share-check"><input type="checkbox" data-share="' + i + '"' + (n.shareable ? ' checked' : '') + '> share</label> <b>#' + (i + 1) + '</b> ' + escapeHtml(n.time || '') + ' — <span class="' + (n.shareable ? '' : 'private-note') + '">' + escapeHtml(n.text) + '</span></li>').reverse().join('');
       list.querySelectorAll('input[data-share]').forEach(cb => cb.addEventListener('change', (e) => {
         const idx = parseInt(e.target.dataset.share, 10);
         state.today.notes[idx].shareable = e.target.checked;
         saveTodayBackground(); syncToServer(); renderSharePreview();
       }));
+      list.querySelectorAll('button[data-delete]').forEach(btn => btn.addEventListener('click', (e) => {
+        deleteNote(parseInt(e.currentTarget.dataset.delete, 10));
+      }));
     }
+    const undoBtn = el('undoBtn');
+    if (undoBtn) undoBtn.style.display = state.today.count > 0 ? '' : 'none';
     setText('gardenCount', state.today.count + ' flowers bloomed today (personal view)');
     const field = el('gardenField');
     if (field) field.textContent = state.today.count ? '🌸 '.repeat(Math.min(state.today.count, 30)) : '🌱 Your garden is waiting for its first thanks today.';
@@ -322,8 +349,42 @@ async function shareAsArt() {
   if (navigator.canShare && navigator.canShare({ files: [file] })) { try { await navigator.share({ title: 'Give Thanks', files: [file] }); return; } catch (e) {} }
   const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = file.name; a.click();
 }
+function pressIndexForNote(noteIdx) {
+  // The press-history entry for the noteIdx-th note: the (noteIdx+1)-th
+  // `true` in pressHistory (bare presses have no note to delete).
+  let seen = -1;
+  for (let i = 0; i < state.pressHistory.length; i++) {
+    if (state.pressHistory[i]) { seen++; if (seen === noteIdx) return i; }
+  }
+  return -1;
+}
+function deleteNote(idx) {
+  // Delete one specific thanks: remove its note and take 1 off the count.
+  // Renders immediately, then saves/syncs in the background, like press().
+  if (!Number.isInteger(idx) || idx < 0 || idx >= state.today.notes.length) return;
+  const pIdx = pressIndexForNote(idx);
+  if (pIdx !== -1) state.pressHistory.splice(pIdx, 1);
+  state.today.notes.splice(idx, 1);
+  state.today.count = Math.max(0, state.today.count - 1);
+  render();
+  saveTodayBackground();
+  syncToServer();
+}
+function undoLastPress() {
+  // Undo the most recent press. If it had a note, that note goes too;
+  // if it was a bare press, only the count drops. Works after a reload as
+  // well, because pressHistory is saved with the count.
+  if (state.today.count <= 0 || !state.pressHistory.length) return;
+  const hadNote = state.pressHistory.pop();
+  if (hadNote) state.today.notes.pop();
+  state.today.count = Math.max(0, state.today.count - 1);
+  render();
+  saveTodayBackground();
+  syncToServer();
+}
 function press(noteText) {
   // Render FIRST, synchronously — never let storage/sync delay the visible count.
+  state.pressHistory.push(!!noteText);
   state.today.count += 1;
   if (noteText) state.today.notes.push({ text: noteText.slice(0, 140), time: timeNow(), shareable: false });
   const btn = el('pressBtn');
@@ -373,9 +434,12 @@ function attachListeners() {
   });
   const gardenOptIn = el('gardenOptIn');
   if (gardenOptIn) gardenOptIn.addEventListener('change', async (e) => { state.settings.gardenOptIn = e.target.checked; await saveSettings(); render(); });
+  const undoBtn = el('undoBtn');
+  if (undoBtn) undoBtn.addEventListener('click', undoLastPress);
   const clearBtn = el('clearToday');
   if (clearBtn) clearBtn.addEventListener('click', () => {
     state.today = { version: DATA_VERSION, date: state.today.date, count: 0, notes: [] };
+    state.pressHistory = [];
     render(); saveTodayBackground(); syncToServer();
   });
   document.querySelectorAll('.tabs button').forEach(b => b.addEventListener('click', () => switchTab(b.dataset.tab)));
