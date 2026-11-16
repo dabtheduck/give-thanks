@@ -32,7 +32,7 @@ const PORT = parseInt(process.env.PORT || '3000', 10);
 if (!BOT_TOKEN) console.warn('[give-thanks] WARNING: BOT_TOKEN not set. Copy .env.example to .env first.');
 
 // ---- ephemeral store ----
-// users: Map<userId, { chatId, timezone, notificationsOn, notifyOnlyIfEmpty, gardenOptIn, groupGardens:Set, today:{date,count,notes[]}, lastNotifyDate, lastRecapDate, blocked }>
+// users: Map<userId, { chatId, timezone, notificationsOn, notifyOnlyIfEmpty, gardenOptIn, groupGardens:Set, today:{date,count,notes[]}, lastRecap:{date,count,notes[]}|null, lastNotifyDate, lastRecapDate, blocked }>
 // Times are fixed: recap 03:00, notify 19:30, in u.timezone. No per-user hours.
 const DATA_FILE = path.join(__dirname, 'data.json');
 const users = new Map();
@@ -44,6 +44,7 @@ function defaultUser(chatId) {
     notificationsOn: true, notifyOnlyIfEmpty: true,
     gardenOptIn: false, groupGardens: [], features: { gardenWeeklyShare: false, newRecapFormat: false, shareOutsideTelegram: true },
     today: { version: CURRENT_VERSION, date: localDateStr(new Date(), 'Asia/Singapore'), count: 0, notes: [] },
+    lastRecap: null,
     lastNotifyDate: '', lastRecapDate: '', blocked: false,
   };
 }
@@ -99,6 +100,16 @@ function localParts(now, tz) {
   return { hour: parseInt(parts.hour, 10) % 24, minute: parseInt(parts.minute, 10), date: `${parts.year}-${parts.month}-${parts.day}` };
 }
 function localDateStr(now, tz) { return localParts(now, tz).date; }
+// The app's day (see public/app.js todayKey): the day ends at 03:00, so
+// before 03:00 the current day is still yesterday's calendar date.
+function serverDayStr(now, tz) {
+  const parts = localParts(now, tz);
+  if (parseInt(parts.hour, 10) < FIXED_RESET_HOUR) {
+    const y = new Date(now); y.setDate(y.getDate() - 1);
+    return localDateStr(y, tz);
+  }
+  return parts.date;
+}
 
 // ---- Telegram initData validation ----
 function validateInitData(initData) {
@@ -176,7 +187,15 @@ bot.command('recap', async (ctx) => {
   // asked, and only leaves a short note in the group. In 1:1 it replies
   // right there.
   const u = getUser(ctx.from.id, ctx.chat.id);
-  const text = formatRecap(u, localDateStr(new Date(), u.timezone));
+  let text = formatRecap(u, localDateStr(new Date(), u.timezone));
+  // If today is still empty, show the last recap too — that is the whole
+  // point of this command: a backup for a missed or wrong-place recap.
+  // (Without this, /recap after a 03:00 reset says "no thanks" even though
+  // yesterday's list existed hours earlier.)
+  const lr = u.lastRecap;
+  if ((!u.today.count && !(u.today.notes || []).length) && lr && lr.count) {
+    text += `\n\n—\n\nNothing yet today, so here’s the last recap (${lr.date}):\n\n` + formatRecap({ today: lr, features: u.features }, lr.date);
+  }
   if (ctx.chat.type === 'private') {
     for (const part of splitMessage(text)) await ctx.reply(part);
     return;
@@ -295,7 +314,7 @@ const app = express();
 app.use(express.json({ limit: '200kb' }));
 // No-store for app assets: the live counter once stayed broken because browsers /
 // Telegram WebView kept serving a cached pre-fix app.js after a redeploy.
-// (index.html also loads app.js/style.css/themes.js with ?v=20261117h.)
+// (index.html also loads app.js/style.css/themes.js with ?v=20261117i.)
 app.use(express.static(path.join(__dirname, 'public'), {
   maxAge: 0, etag: false,
   setHeaders(res, filePath) { if (/\.(js|css|html)$/.test(filePath)) res.set('Cache-Control', 'no-store'); },
@@ -329,12 +348,22 @@ app.post('/api/sync', (req, res) => {
   }
   if (req.body.today) {
     const t = req.body.today;
+    // The app's day ends at 03:00 (see public/app.js todayKey). A sync
+    // dated before the current app-day is stale — e.g. an app left open
+    // across 03:00, or a retry arriving after the reset — and must never
+    // drag the server's today backwards (2026-11-17: stale syncs hid
+    // post-03:00 presses from /recap).
+    const currentDay = serverDayStr(new Date(), u.timezone);
+    if (String(t.date || '') && String(t.date) < currentDay) {
+      console.log('sync ignored stale today', String(t.date), 'current day', currentDay);
+    } else {
     u.today = { version: CURRENT_VERSION, date: String(t.date || u.today.date), count: Number(t.count || 0), notes: Array.isArray(t.notes) ? t.notes.slice(0, 200).map(n => ({ text: String(n.text || '').slice(0, 140), time: String(n.time || ''), shareable: typeof n.shareable === 'boolean' ? n.shareable : false })) : [] };
     // garden aggregation, anonymous count only
     if (u.gardenOptIn && req.body.gardenId) {
       const g = gardens.get(String(req.body.gardenId));
       if (g) g.countToday = u.today.count; // MVP: per-garden total is summed on read, see /api/garden
     }
+    } // end else (non-stale today)
   }
   res.json({ ok: true, count: u.today.count });
 });
@@ -400,6 +429,12 @@ async function tick() {
       const text = formatRecap(u, parts.date);
       try { for (const part of splitMessage(text)) await bot.telegram.sendMessage(u.chatId, part); }
       catch (e) { if (e.response?.error_code === 403) u.blocked = true; }
+      // Keep yesterday's list for /recap (2026-11-17: /recap at 03:19 said
+      // "no thanks" because this reset had already wiped the list — the
+      // scheduled recap had gone to the wrong chat, so the backup showed
+      // nothing). Replaced by the next day's recap; persisted in data.json
+      // like the rest of the user record (today itself stays ephemeral).
+      u.lastRecap = { date: u.today.date, count: u.today.count, notes: u.today.notes.map(n => ({ ...n })) };
       // Delete today's ephemeral copy. CloudStorage is cleared by the Mini App on next open (new date key).
       u.today = { version: CURRENT_VERSION, date: parts.date, count: 0, notes: [] };
       u.lastNotifyDate = '';

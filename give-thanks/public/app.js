@@ -179,6 +179,59 @@ function initThemes() {
 }
 
 // ---- load / save (never block the UI, never wipe on error) ----
+// Minutes since midnight of a "HH:MM" time (-1 if it has no usable time).
+function minutesOf(t) {
+  const m = /^(\d{1,2}):(\d{2})/.exec(String(t || ''));
+  if (!m) return -1;
+  return (parseInt(m[1], 10) % 24) * 60 + parseInt(m[2], 10);
+}
+// The day ends at 03:00. If the app was left open across the boundary,
+// state.today still holds yesterday's date — presses after 03:00 would be
+// filed under yesterday and the server would drop them. Roll over first,
+// rescuing any presses made after 03:00: a note timed between 03:00 and
+// right now can only be from the new day (a later time today hasn't
+// happened yet, and an earlier one belongs to yesterday's recap). Presses
+// are chronological, so bare presses after the first rescued note belong
+// to the new day too. Everything else was already in the 03:00 recap, so
+// it is dropped, not double-counted.
+function rolloverIfNeeded() {
+  const today = todayKey();
+  if (today === state.today.date) return false;
+  const notes = state.today.notes || [];
+  const hist = Array.isArray(state.pressHistory) ? state.pressHistory : null;
+  const nowMin = minutesOf(timeNow());
+  const startMin = FIXED_RESET_HOUR * 60;
+  let firstNew = -1;
+  for (let i = 0; i < notes.length; i++) {
+    const nm = minutesOf(notes[i].time);
+    if (nm >= startMin && nm <= nowMin) { firstNew = i; break; }
+  }
+  if (firstNew === -1) {
+    state.today = { version: DATA_VERSION, date: today, count: 0, notes: [] };
+    state.pressHistory = [];
+  } else {
+    const newNotes = notes.slice(firstNew);
+    let newHist;
+    if (hist) {
+      // Walk history, consuming notes in order, until the first rescued
+      // note; everything from there on is new-day.
+      let seen = 0, cut = hist.length;
+      for (let i = 0; i < hist.length; i++) {
+        if (hist[i]) { if (seen === firstNew) { cut = i; break; } seen++; }
+      }
+      newHist = hist.slice(cut);
+      if (newHist.length < newNotes.length) newHist = newNotes.map(() => true);
+    } else {
+      newHist = newNotes.map(() => true);
+    }
+    state.today = { version: DATA_VERSION, date: today, count: newHist.length, notes: newNotes };
+    state.pressHistory = newHist;
+  }
+  saveTodayBackground();
+  syncToServer();
+  render();
+  return true;
+}
 async function loadToday() {
   try {
     const meta = await csGet('gt_today_meta');
@@ -186,30 +239,39 @@ async function loadToday() {
       try {
         const rawMeta = JSON.parse(meta);
         const m = migrateToday(rawMeta);
-        if (m.date === state.today.date) {
-          state.today.count = m.count || 0;
-          // Restore undo history if this install saved it; otherwise mark it
-          // to be rebuilt from the notes once they finish loading below.
-          if (Array.isArray(rawMeta.pressHistory) && rawMeta.pressHistory.every(v => typeof v === 'boolean')) {
-            state.pressHistory = rawMeta.pressHistory.slice(0, Math.max(state.today.count, 0));
-          } else {
-            state.pressHistory = null;
-          }
-          state.today.notes = [];
-          for (let i = 1; i <= 10; i++) {
-            const chunk = await csGet('gt_today_notes_' + i);
-            if (!chunk) break;
-            try { state.today.notes.push.apply(state.today.notes, JSON.parse(chunk)); } catch (e) {}
-          }
-          if (state.pressHistory === null) {
-            // Old install, no saved history: notes first, count-only presses
-            // last, so an undo after reload takes a bare press off before
-            // touching a note.
-            const bare = Math.max(0, state.today.count - state.today.notes.length);
-            state.pressHistory = state.today.notes.map(() => true).concat(Array(bare).fill(false));
-          }
-          render(); return;
+        const storedDate = m.date;
+        state.today.count = m.count || 0;
+        // Restore undo history if this install saved it; otherwise mark it
+        // to be rebuilt from the notes once they finish loading below.
+        if (Array.isArray(rawMeta.pressHistory) && rawMeta.pressHistory.every(v => typeof v === 'boolean')) {
+          state.pressHistory = rawMeta.pressHistory.slice(0, Math.max(state.today.count, 0));
+        } else {
+          state.pressHistory = null;
         }
+        state.today.notes = [];
+        for (let i = 1; i <= 10; i++) {
+          const chunk = await csGet('gt_today_notes_' + i);
+          if (!chunk) break;
+          try { state.today.notes.push.apply(state.today.notes, JSON.parse(chunk)); } catch (e) {}
+        }
+        if (state.pressHistory === null) {
+          // Old install, no saved history: notes first, count-only presses
+          // last, so an undo after reload takes a bare press off before
+          // touching a note.
+          const bare = Math.max(0, state.today.count - state.today.notes.length);
+          state.pressHistory = state.today.notes.map(() => true).concat(Array(bare).fill(false));
+        }
+        // The stored bucket may be yesterday's (app left open across
+        // 03:00). Keep its date, then roll over — rescuing any presses
+        // made after 03:00 — instead of wiping them.
+        state.today.date = storedDate;
+        render();
+        rolloverIfNeeded();
+        // Re-sync on open: the server's today is ephemeral (a Render
+        // restart wipes it), so the app re-sends what it holds. This is
+        // what heals the server after a redeploy or a failed sync.
+        syncToServer();
+        return;
       } catch (e) {
         showError("Couldn't load the new bits, your thanks are safe");
       }
@@ -264,7 +326,10 @@ async function saveSettings() {
 function syncToServer() {
   try {
     const ctrl = new AbortController();
-    setTimeout(() => { try { ctrl.abort(); } catch (e) {} }, 5000);
+    // 90s, not 5s: a sync that wakes a sleeping Render takes ~60s, and
+    // aborting it loses the sync (2026-11-17: presses after 03:00 never
+    // reached the server). Background only, never blocks the UI.
+    setTimeout(() => { try { ctrl.abort(); } catch (e) {} }, 90000);
     fetch('/api/sync', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: ctrl.signal,
       body: JSON.stringify({ apiVersion: DATA_VERSION, initData: (tg && tg.initData) || '', today: state.today, settings: state.settings, gardenId: state.gardenId }),
@@ -413,6 +478,10 @@ function undoLastPress() {
   syncToServer();
 }
 function press(noteText) {
+  // Roll over first: a press after 03:00 belongs to the new day even if
+  // the app was opened yesterday (2026-11-17: post-03:00 presses filed
+  // under yesterday never showed in /recap).
+  rolloverIfNeeded();
   // Render FIRST, synchronously — never let storage/sync delay the visible count.
   state.pressHistory.push(!!noteText);
   state.today.count += 1;
@@ -472,6 +541,9 @@ function attachListeners() {
     state.pressHistory = [];
     render(); saveTodayBackground(); syncToServer();
   });
+  // Coming back to the app after 03:00 should show the new day, not
+  // yesterday's count — roll over on return, same as on press.
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) { try { rolloverIfNeeded(); } catch (e) {} } });
   document.querySelectorAll('.tabs button').forEach(b => b.addEventListener('click', () => switchTab(b.dataset.tab)));
   const goShare = el('goShareBtn');
   if (goShare) goShare.addEventListener('click', () => { switchTab('share'); renderSharePreview(); });

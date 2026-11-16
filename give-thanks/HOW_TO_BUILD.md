@@ -100,12 +100,13 @@ Note: polling (used in MVP) works on Render/Railway. Webhooks are more efficient
 6. Wait for reset → recap arrives in chat, count goes to 0 on next open.
 7. Add bot to a test Telegram group, send `/garden` → bot posts join link, tap it, opt in, press in the Mini App → garden flower count goes up, no name shown.
 8. Open Science tab → text reads well, links work.
-9. Send `/recap` → full list arrives, unblurred. In a group it arrives by DM, never posted in the group.
+9. Send `/recap` → full list arrives, unblurred. In a group it arrives by DM, never posted in the group. If today is empty, it also shows the last recap (yesterday's list) — the server keeps one day back for exactly this.
+10. Leave the app open across 03:00, press after 03:00 → the new day starts fresh at 1 and `/recap` shows it. Reopen the app → it re-syncs on open, so a Render restart/redeploy can't lose today's list. A sync dated before today is ignored by the server (check Render logs for "sync ignored stale today").
 
 ### Bot commands (menu)
 The command menu is set by `server.js` on startup (`setMyCommands`), so it stays in sync with the code — no BotFather step needed. Type `/` in any chat with the bot to see it.
 - `/start` — welcome + Open button. `/open` — open the counter. `/today` — today's count. `/recap` — full instant recap, now. `/garden` — create a group garden (groups only). `/about` — Bulletin Board text. `/settings` — recap 3am / nudge 7:30pm. `/stop` — pause recaps and nudges.
-- `/recap` does not reset the day; the 03:00 recap still does that. In a group it DMs the full recap to whoever asked (personal notes never post in a group); in 1:1 it replies there. If the bot can't DM someone (they never tapped /start in 1:1), it says so in the group.
+- `/recap` does not reset the day; the 03:00 recap still does that. In a group it DMs the full recap to whoever asked (personal notes never post in a group); in 1:1 it replies there. If the bot can't DM someone (they never tapped /start in 1:1), it says so in the group. If today is empty it falls back to the last recap, kept in `u.lastRecap` (saved by the 03:00 reset before it wipes the day, persisted in `data.json`).
 - Owner-only, not in the menu: `/edit_about` (1:1 only), `/cancel`.
 
 ## 6. Common gotchas
@@ -115,6 +116,8 @@ The command menu is set by `server.js` on startup (`setMyCommands`), so it stays
 - **Notes missing from recap:** the press saved to CloudStorage but the sync POST failed (server down / initData invalid). Check server logs for `/api/sync`. The CloudStorage copy is the fallback — the app will offer a “Send recap now” button if it detects a missed reset.
 - **CloudStorage 4096-char limit:** notes are chunked in `app.js`. Don't store the whole day in one key.
 - **Telegram message limit:** recap >4096 chars is split into 2 messages in `server.js`.
+- **Server's today is ephemeral:** a Render restart or redeploy wipes `u.today` (it is never saved to `data.json`); the app re-syncs on open, so the app is the source of truth. If `/recap` says 0 but the app shows thanks, reopen the app and try `/recap` again.
+- **Presses across 03:00:** the app rolls over on press and on return (`rolloverIfNeeded` in `app.js`), rescuing post-03:00 presses stored under yesterday's date by their note times. A sync dated before the current day is ignored by the server.
 
 ## 7. What to do next after MVP works
 1. Move the ephemeral store to Cloudflare KV / Upstash with TTL.
