@@ -4,9 +4,12 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <title>Give Thanks 🌱</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800;900&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
-<script src="themes.js?v=20261117b"></script>
-<link rel="stylesheet" href="style.css?v=20261117b">
+<script src="themes.js?v=20261117d"></script>
+<link rel="stylesheet" href="style.css?v=20261117d">
 </head>
 <body>
 <div id="app">
@@ -14,37 +17,23 @@
     <div class="logo">🌱 GIVE THANKS</div>
     <div class="date" id="todayDate">—</div>
   </header>
-  <p class="schedule-banner" id="scheduleBanner">Recap + reset <b>3:00am</b> &nbsp;•&nbsp; Nudge <b>7:30pm</b> &nbsp;•&nbsp; <span id="tzLabel">your timezone</span></p>
-
   <!-- COUNTER -->
   <section id="tab-counter" class="tab active">
-    <div class="stage" id="plantStage">JUST SPROUTED</div>
-    <div class="plant" id="plant" aria-hidden="true">🌱</div>
-    <div class="count" id="count">0</div>
-    <div class="count-label"><span id="countLabel">thanks today</span></div>
+    <div class="counter-card">
+      <div class="stage" id="plantStage">JUST SPROUTED</div>
+      <div class="plant" id="plant" aria-hidden="true">🌱</div>
+      <div class="count" id="count">0</div>
+      <div class="count-label"><span id="countLabel">thanks today</span></div>
+    </div>
     <button id="pressBtn" class="press-btn" type="button">+ thanks</button>
     <div class="note-row">
       <input id="noteInput" maxlength="140" placeholder="What are you thankful for? (optional)" autocomplete="off">
       <button id="addNoteBtn" class="small-btn" type="button">Add note</button>
     </div>
     <p class="hint">Press once per thanks. Add a note if you like. No streaks, no pressure.</p>
+    <h3 class="list-heading">Today's list <span class="list-note">tick = shareable · unticked = blurred out</span></h3>
     <ul id="notesList" class="notes"></ul>
     <button id="goShareBtn" class="small-btn share-btn" type="button">Share today ↗</button>
-    <div class="settings-card">
-      <h3>Your day</h3>
-      <p class="calm">Recap + reset — <b>3:00am every day</b>, in your timezone. Notification — <b>7:30pm every day</b>, one gentle prompt.</p>
-      <label>Timezone
-        <select id="timezone"></select>
-      </label>
-      <label>Theme — cream + forest is the default. Future themes plug in here.
-        <select id="themeSelect"></select>
-      </label>
-      <label class="toggle"><input type="checkbox" id="notificationsOn" checked> Notifications on</label>
-      <label class="toggle"><input type="checkbox" id="notifyOnlyIfEmpty" checked> Only notify if I haven't pressed yet today</label>
-      <button id="saveSettings" class="small-btn" type="button">Save settings</button>
-      <button id="clearToday" class="small-btn danger" type="button">Clear today's data</button>
-      <p class="fine">Your notes live in Telegram CloudStorage and in a temporary store until your recap is sent, then they are deleted. Recaps stay in your Telegram chat.</p>
-    </div>
     <p class="sync" id="syncStatus">Saved on this device</p>
   </section>
 
@@ -74,6 +63,11 @@
     <h2>📋 Bulletin Board</h2>
     <p class="calm">About Give Thanks — write whatever you like here.</p>
     <div id="aboutContent"></div>
+    <div class="edit-card">
+      <h3>✏️ Edit this page</h3>
+      <p class="calm">In Telegram, in a 1:1 chat with @givethanksbot, send <code>/edit_about</code>, then send your new text as your next message. Send <code>/cancel</code> to stop without changing anything. Only you can edit it.</p>
+      <p class="fine">Edits save straight away in the app. Note: if you redeploy on Render, re-upload the updated <code>public/content/about.md</code> to GitHub too, or the redeploy will bring back the old text.</p>
+    </div>
     <p class="fine">Educational only, not medical advice. If you're struggling, consider talking to a clinician or a trusted person.</p>
   </section>
 
@@ -84,6 +78,6 @@
     <button data-tab="about" type="button">📋 About</button>
   </nav>
 </div>
-<script src="app.js?v=20261117b"></script>
+<script src="app.js?v=20261117d"></script>
 </body>
 </html>

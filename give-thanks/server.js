@@ -155,9 +155,18 @@ bot.command('today', (ctx) => {
   const u = getUser(ctx.from.id, ctx.chat.id);
   ctx.reply(u.today.count ? `Today: ${u.today.count} thanks 🌱` : 'No thanks yet today. Fresh day, whenever you’re ready.');
 });
-bot.command('settings', (ctx) => ctx.reply('Settings live in the Mini App:', openKeyboard()));
-bot.command('about', (ctx) => ctx.reply('About / Bulletin Board lives in the Mini App:', openKeyboard()));
-bot.command('science', (ctx) => ctx.reply('About / Bulletin Board lives in the Mini App:', openKeyboard())); // alias, kept so old links still work
+bot.command('settings', (ctx) => ctx.reply('There are no settings to fiddle with — recap is 3am, nudge is 7:30pm, in your timezone. Open the app:', openKeyboard()));
+bot.command('about', async (ctx) => {
+  // Show the current Bulletin Board text in chat, plus a button to open it.
+  const text = getAboutText();
+  for (const part of splitMessage(`📋 Bulletin Board\n\n${text}`)) await ctx.reply(part);
+  await ctx.reply('Open it in the Mini App:', openKeyboard());
+});
+bot.command('science', async (ctx) => {
+  const text = getAboutText();
+  for (const part of splitMessage(`📋 Bulletin Board\n\n${text}`)) await ctx.reply(part);
+  await ctx.reply('Open it in the Mini App:', openKeyboard());
+}); // alias, kept so old links still work
 
 // ---- Edit About on the fly in Telegram ----
 // About text lives in public/content/about.md. /edit_about lets the owner replace it from Telegram.
@@ -182,8 +191,9 @@ bot.command('edit_about', async (ctx) => {
   if (adminId && String(ctx.from.id) !== adminId) return ctx.reply('Only the bot owner can edit the About page.');
   if (!adminId) { adminId = String(ctx.from.id); console.log(`[give-thanks] About admin set to ${adminId}`); }
   awaitingAbout.set(ctx.from.id, true);
+  const current = getAboutText();
   await ctx.reply(
-    `Okay, send me the new About / Bulletin Board text as your next message.\n\nYou can write as much as you like, with # headings, blank lines between paragraphs, and - bullets.\n\nIt will replace the current page straight away. Send /cancel to stop without changing anything.`,
+    `Okay, send me the new About / Bulletin Board text as your next message.\n\nYou can write as much as you like, with # headings, blank lines between paragraphs, and - bullets.\n\nIt will replace the current page straight away. Send /cancel to stop without changing anything.\n\nCurrent text:\n${current.slice(0, 800)}${current.length > 800 ? '…' : ''}`,
   );
 });
 bot.command('cancel', async (ctx) => {
@@ -234,7 +244,7 @@ const app = express();
 app.use(express.json({ limit: '200kb' }));
 // No-store for app assets: the live counter once stayed broken because browsers /
 // Telegram WebView kept serving a cached pre-fix app.js after a redeploy.
-// (index.html also loads app.js/style.css/themes.js with ?v=20261117b.)
+// (index.html also loads app.js/style.css/themes.js with ?v=20261117d.)
 app.use(express.static(path.join(__dirname, 'public'), {
   maxAge: 0, etag: false,
   setHeaders(res, filePath) { if (/\.(js|css|html)$/.test(filePath)) res.set('Cache-Control', 'no-store'); },
@@ -348,5 +358,5 @@ cron.schedule('* * * * *', () => { tick().catch(e => console.error('tick', e.mes
 // ---- start ----
 app.listen(PORT, () => console.log(`[give-thanks] Mini App at http://localhost:${PORT} — set MINI_APP_URL to your public URL for Telegram`));
 if (BOT_TOKEN) bot.launch().then(() => console.log('[give-thanks] bot polling started')).catch(e => console.error('bot launch', e.message));
-process.once('SIGINT', () => bot.stop('SIGINT'));
-process.once('SIGTERM', () => bot.stop('SIGTERM'));
+process.once('SIGINT', () => { try { if (BOT_TOKEN) bot.stop('SIGINT'); } catch (e) {} process.exit(0); });
+process.once('SIGTERM', () => { try { if (BOT_TOKEN) bot.stop('SIGTERM'); } catch (e) {} process.exit(0); });
