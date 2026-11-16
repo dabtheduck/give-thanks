@@ -1,42 +1,50 @@
-/* Give Thanks — cozy rough pixel art. Cream / forest / burnt orange / charcoal. */
+/* Give Thanks — cozy rough pixel art. Cream / forest / burnt orange / charcoal.
+   Mockup-matched: chunky pixel borders, hard shadows, monospace headings. */
 :root{--cream:#FFF6E5;--charcoal:#2B2B2B;--forest:#4A7C59;--sage:#A8C3A0;--orange:#D97B29;--sienna:#A0522D;--stone:#8A8A8A;--wood:#7A5230}
 *{box-sizing:border-box}
 body{margin:0;background:var(--cream);color:var(--charcoal);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
-#app{max-width:520px;margin:0 auto;min-height:100vh;padding:16px 16px 96px}
+#app{max-width:520px;margin:0 auto;min-height:100vh;padding:16px 16px 110px}
 header{display:flex;justify-content:space-between;align-items:baseline;border-bottom:4px solid var(--charcoal);padding-bottom:10px}
-.logo{font-family:"Courier New",monospace;font-weight:900;letter-spacing:1px}
+.logo{font-family:"Courier New",monospace;font-weight:900;letter-spacing:1px;font-size:19px}
 .date{font-size:13px;color:var(--stone)}
+.schedule-banner{margin:12px 0 0;background:#EAF3E6;border:3px solid var(--charcoal);box-shadow:4px 4px 0 var(--charcoal);padding:10px 12px;font-size:13px;line-height:1.5;text-align:center}
+.schedule-banner b{color:var(--forest)}
 .tab{display:none;padding-top:18px}
 .tab.active{display:block}
-h2{font-family:"Courier New",monospace}
-.plant{font-size:56px;text-align:center;filter:drop-shadow(3px 3px 0 rgba(0,0,0,.15))}
+h2{font-family:"Courier New",monospace;margin:6px 0 10px}
+h3{font-family:"Courier New",monospace;margin:0 0 8px}
+.stage{font-family:"Courier New",monospace;font-size:13px;font-weight:900;letter-spacing:2px;text-align:center;color:var(--forest)}
+.plant{font-size:56px;text-align:center;filter:drop-shadow(3px 3px 0 rgba(0,0,0,.15));margin-top:4px}
 .count{font-family:"Courier New",monospace;font-size:84px;font-weight:900;text-align:center;line-height:1}
-.count-label{text-align:center;color:var(--forest);margin-bottom:18px}
-.press-btn{display:block;width:100%;padding:22px;font-family:"Courier New",monospace;font-size:24px;font-weight:900;background:var(--forest);color:#fff;border:4px solid var(--charcoal);box-shadow:6px 6px 0 var(--charcoal);cursor:pointer}
+.count-label{text-align:center;color:var(--forest);margin-bottom:18px;font-weight:700}
+.press-btn{display:block;width:100%;padding:22px;font-family:"Courier New",monospace;font-size:24px;font-weight:900;background:var(--forest);color:#fff;border:4px solid var(--charcoal);box-shadow:6px 6px 0 var(--charcoal);cursor:pointer;border-radius:0}
 .press-btn:active{transform:translate(3px,3px);box-shadow:3px 3px 0 var(--charcoal)}
 .press-btn.pop{animation:pop .18s ease}
 @keyframes pop{50%{transform:scale(1.04)}}
 .note-row{display:flex;gap:8px;margin-top:14px}
-.note-row input{flex:1;padding:12px;border:4px solid var(--charcoal);background:#fff;font-size:15px}
-.small-btn{padding:12px 14px;background:var(--orange);color:#fff;border:4px solid var(--charcoal);box-shadow:4px 4px 0 var(--charcoal);font-weight:700;cursor:pointer}
+.note-row input{flex:1;padding:12px;border:4px solid var(--charcoal);background:#fff;font-size:15px;border-radius:0}
+.small-btn{padding:12px 14px;background:var(--orange);color:#fff;border:4px solid var(--charcoal);box-shadow:4px 4px 0 var(--charcoal);font-weight:700;cursor:pointer;border-radius:0;font-size:15px}
+.small-btn:active{transform:translate(2px,2px);box-shadow:2px 2px 0 var(--charcoal)}
 .small-btn.danger{background:#fff;color:var(--charcoal);margin-top:10px}
+.share-btn{background:var(--sienna);margin-top:14px}
 .hint,.calm{color:#555;font-size:14px;line-height:1.5}
 .notes{list-style:none;padding:0}
 .notes li{background:#fff;border:3px solid var(--charcoal);padding:10px;margin:8px 0;box-shadow:3px 3px 0 rgba(0,0,0,.12)}
 .share-check{font-size:13px;color:var(--forest)}
 .private-note{filter:blur(1px);opacity:.7}
-.share-section{margin-top:14px;border-top:4px solid var(--charcoal);padding-top:12px}
 .share-preview{background:#fff;border:3px solid var(--charcoal);padding:12px;margin:10px 0;white-space:pre-wrap;line-height:1.5}
-.share-section .small-btn{margin:4px 4px 4px 0;background:var(--sienna)}
-#shareBtn{background:var(--sienna)}
-.notes li b{font-family:"Courier New",monospace}
+#tab-share .small-btn{background:var(--sienna);margin:4px 4px 4px 0;display:inline-block}
+.settings-card{margin-top:20px;background:#fff;border:3px solid var(--charcoal);box-shadow:4px 4px 0 var(--charcoal);padding:14px}
+.settings-card .small-btn{margin:4px 4px 4px 0}
 .sync{font-size:12px;color:var(--stone);text-align:center}
 .garden-field{font-size:28px;line-height:1.4;background:#EAF3E6;border:4px solid var(--charcoal);padding:14px;min-height:120px;margin:12px 0}
 .toggle{display:block;margin:12px 0;font-size:15px}
 label{display:block;margin:14px 0;font-weight:600}
-select,input[type=text]{width:100%;padding:10px;border:3px solid var(--charcoal);margin-top:6px;background:#fff}
-.tabs{position:fixed;left:0;right:0;bottom:0;display:flex;background:#fff;border-top:4px solid var(--charcoal)}
-.tabs button{flex:1;padding:14px 4px;background:none;border:0;font-size:13px;cursor:pointer}
+select,input[type=text]{width:100%;padding:10px;border:3px solid var(--charcoal);margin-top:6px;background:#fff;border-radius:0}
+.tabs{position:fixed;left:0;right:0;bottom:0;display:flex;background:#fff;border-top:4px solid var(--charcoal);z-index:10}
+.tabs button{flex:1;padding:14px 4px;background:none;border:0;font-size:13px;cursor:pointer;color:var(--charcoal)}
 .tabs button.active{background:var(--sage);font-weight:800}
 .fine{font-size:12px;color:var(--stone);line-height:1.5}
 code{background:#eee;padding:2px 4px}
+#aboutContent h2,#aboutContent h3{font-family:"Courier New",monospace}
+#aboutContent ul{line-height:1.6}

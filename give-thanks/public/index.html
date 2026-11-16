@@ -5,8 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <title>Give Thanks 🌱</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
-<script src="themes.js"></script>
-<link rel="stylesheet" href="style.css">
+<script src="themes.js?v=20261117b"></script>
+<link rel="stylesheet" href="style.css?v=20261117b">
 </head>
 <body>
 <div id="app">
@@ -14,26 +14,36 @@
     <div class="logo">🌱 GIVE THANKS</div>
     <div class="date" id="todayDate">—</div>
   </header>
+  <p class="schedule-banner" id="scheduleBanner">Recap + reset <b>3:00am</b> &nbsp;•&nbsp; Nudge <b>7:30pm</b> &nbsp;•&nbsp; <span id="tzLabel">your timezone</span></p>
 
   <!-- COUNTER -->
   <section id="tab-counter" class="tab active">
+    <div class="stage" id="plantStage">JUST SPROUTED</div>
     <div class="plant" id="plant" aria-hidden="true">🌱</div>
     <div class="count" id="count">0</div>
-    <div class="count-label">thanks today</div>
-    <button id="pressBtn" class="press-btn">+ thanks</button>
+    <div class="count-label"><span id="countLabel">thanks today</span></div>
+    <button id="pressBtn" class="press-btn" type="button">+ thanks</button>
     <div class="note-row">
       <input id="noteInput" maxlength="140" placeholder="What are you thankful for? (optional)" autocomplete="off">
-      <button id="addNoteBtn" class="small-btn">Add note</button>
+      <button id="addNoteBtn" class="small-btn" type="button">Add note</button>
     </div>
     <p class="hint">Press once per thanks. Add a note if you like. No streaks, no pressure.</p>
     <ul id="notesList" class="notes"></ul>
-    <button id="shareBtn" class="small-btn">Share today ↗</button>
-    <div id="shareSection" class="share-section">
-      <p class="calm">Tick “share” on a note to include it. Unticked notes are blurred out. This shares <b>outside Telegram</b> — pick WhatsApp, Instagram, Messages, etc. from your phone's share sheet.</p>
-      <div id="sharePreview" class="share-preview"></div>
-      <button id="shareMessageBtn" class="small-btn">Share as message</button>
-      <button id="shareArtBtn" class="small-btn">Share as art page (image)</button>
-      <button id="copyShareBtn" class="small-btn">Copy text</button>
+    <button id="goShareBtn" class="small-btn share-btn" type="button">Share today ↗</button>
+    <div class="settings-card">
+      <h3>Your day</h3>
+      <p class="calm">Recap + reset — <b>3:00am every day</b>, in your timezone. Notification — <b>7:30pm every day</b>, one gentle prompt.</p>
+      <label>Timezone
+        <select id="timezone"></select>
+      </label>
+      <label>Theme — cream + forest is the default. Future themes plug in here.
+        <select id="themeSelect"></select>
+      </label>
+      <label class="toggle"><input type="checkbox" id="notificationsOn" checked> Notifications on</label>
+      <label class="toggle"><input type="checkbox" id="notifyOnlyIfEmpty" checked> Only notify if I haven't pressed yet today</label>
+      <button id="saveSettings" class="small-btn" type="button">Save settings</button>
+      <button id="clearToday" class="small-btn danger" type="button">Clear today's data</button>
+      <p class="fine">Your notes live in Telegram CloudStorage and in a temporary store until your recap is sent, then they are deleted. Recaps stay in your Telegram chat.</p>
     </div>
     <p class="sync" id="syncStatus">Saved on this device</p>
   </section>
@@ -43,13 +53,23 @@
     <h2>🌸 The Garden</h2>
     <p class="calm">Anonymous, opt-in. Each thanks adds a flower. No names, no likes, no ranking.</p>
     <label class="toggle"><input type="checkbox" id="gardenOptIn"> Join the personal garden</label>
-    <div class="garden-field" id="gardenField"></div>
+    <div class="garden-field" id="gardenField">🌱 Your garden is waiting for its first thanks today.</div>
     <p class="calm" id="gardenCount">0 flowers bloomed today</p>
     <p class="calm">Group garden? Add the bot to a Telegram group and send <code>/garden</code> there. Only members of that group can join it.</p>
   </section>
 
-  <!-- ABOUT / BULLETIN BOARD — dab writes whatever here, lots of text welcome.
-       Edit public/content/about.md, no code changes needed. -->
+  <!-- SHARE -->
+  <section id="tab-share" class="tab">
+    <h2>↗ Share today</h2>
+    <p class="calm">Tick “share” on a note to include it. Unticked notes are blurred out. This shares <b>outside Telegram</b> — pick WhatsApp, Instagram, Messages, etc. from your phone's share sheet.</p>
+    <div id="sharePreview" class="share-preview"></div>
+    <button id="shareMessageBtn" class="small-btn" type="button">Share as message</button>
+    <button id="shareArtBtn" class="small-btn" type="button">Share as art page (image)</button>
+    <button id="copyShareBtn" class="small-btn" type="button">Copy text</button>
+    <p class="fine">Private notes are never included as text. They appear as blurred blocks. Your Telegram ID, name, garden data and settings are never shared.</p>
+  </section>
+
+  <!-- ABOUT / BULLETIN BOARD -->
   <section id="tab-about" class="tab">
     <h2>📋 Bulletin Board</h2>
     <p class="calm">About Give Thanks — write whatever you like here.</p>
@@ -57,31 +77,13 @@
     <p class="fine">Educational only, not medical advice. If you're struggling, consider talking to a clinician or a trusted person.</p>
   </section>
 
-  <!-- SETTINGS -->
-  <section id="tab-settings" class="tab">
-    <h2>⚙️ Settings</h2>
-    <label>Timezone
-      <select id="timezone"></select>
-    </label>
-    <p class="calm">Recap + reset — <b>3:00am every day</b>, in your timezone.</p>
-    <p class="calm">Notification — <b>7:30pm every day</b>, in your timezone, one gentle prompt.</p>
-    <label>Theme — cream + forest is the default. Future themes plug in here.
-      <select id="themeSelect"></select>
-    </label>
-    <label class="toggle"><input type="checkbox" id="notificationsOn" checked> Notifications on</label>
-    <label class="toggle"><input type="checkbox" id="notifyOnlyIfEmpty" checked> Only notify if I haven't pressed yet today</label>
-    <button id="saveSettings" class="small-btn">Save settings</button>
-    <button id="clearToday" class="small-btn danger">Clear today's data</button>
-    <p class="fine">Your notes live in Telegram CloudStorage and in a temporary store until your recap is sent, then they are deleted. Recaps stay in your Telegram chat.</p>
-  </section>
-
   <nav class="tabs">
-    <button data-tab="counter" class="active">🌱 Counter</button>
-    <button data-tab="garden">🌸 Garden</button>
-    <button data-tab="about">📋 About</button>
-    <button data-tab="settings">⚙️ Settings</button>
+    <button data-tab="counter" class="active" type="button">🌱 Counter</button>
+    <button data-tab="garden" type="button">🌸 Garden</button>
+    <button data-tab="share" type="button">↗ Share</button>
+    <button data-tab="about" type="button">📋 About</button>
   </nav>
 </div>
-<script src="app.js"></script>
+<script src="app.js?v=20261117b"></script>
 </body>
 </html>

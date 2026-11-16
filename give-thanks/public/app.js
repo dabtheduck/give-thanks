@@ -1,19 +1,39 @@
-// Give Thanks — Mini App
-// CloudStorage first (1024 keys, 4096 chars/value), sync to server second.
-// Chunk notes across keys: gt_today_notes_1, gt_today_notes_2, ...
-// Upgrades: DATA_VERSION = 4. Old records with no version are v1.
-// Migrate on read, never delete unknown fields, safe fallback if new data fails to parse.
-// v3: notes gain shareable (default false = private). See UPGRADES.md.
-// v4: times are hardcoded — recap 03:00, notification 19:30, in your timezone.
-// No hour settings. Timezone is still per-user, auto-detected from the device.
+// Give Thanks — Mini App (mockup-matched rebuild)
+// DATA_VERSION 4. Fixed schedule: recap/reset 03:00, notification 19:30, in your timezone.
+// CloudStorage first (chunked notes), then POST /api/sync for scheduler/recap.
+//
+// COUNTER BUG — why it stayed at 0 even after the todayKey fix:
+//   press() incremented state, then awaited saveToday(), which awaited csSet().
+//   Outside Telegram, telegram-web-app.js still defines tg.CloudStorage, but its
+//   getItem/setItem callbacks NEVER fire in a regular browser, so csSet never
+//   resolved, saveToday() never reached render(), and the count never appeared.
+//   loadToday() at startup hung the same way.
+// FIX (this file):
+//   1. Listeners are attached FIRST, before any async init.
+//   2. press() renders IMMEDIATELY and synchronously, then saves in the background.
+//   3. Every CloudStorage call races a 500ms timeout and falls back to localStorage.
+//   4. Every init step is individually try/catch'd; a bad load never kills the UI.
 const DATA_VERSION = 4;
 const FIXED_RESET_HOUR = 3;
 const FIXED_NOTIFY_HOUR = 19;
 const FIXED_NOTIFY_MINUTE = 30;
-const tg = window.Telegram?.WebApp;
-tg?.ready(); tg?.expand();
-const cs = tg?.CloudStorage;
+const CS_TIMEOUT_MS = 500;
 
+const tg = (typeof window !== 'undefined' && window.Telegram) ? window.Telegram.WebApp : undefined;
+try { tg && tg.ready(); tg && tg.expand(); } catch (e) { /* not in Telegram, fine */ }
+const cs = tg ? tg.CloudStorage : undefined;
+
+function el(id) { return document.getElementById(id); }
+function setText(id, v) { const n = el(id); if (n) n.textContent = v; }
+function showError(msg) { setText('syncStatus', msg); }
+
+window.addEventListener('error', (e) => {
+  // Visible fallback: the app must never silently die again.
+  showError('Something went wrong loading — your thanks are safe, try pressing again.');
+  try { render(); } catch (_) {}
+});
+
+// ---- migrations (v4, migrate on read, never delete unknown fields) ----
 function migrateSettings(raw) {
   const s = { ...(raw || {}) };
   const from = s.version || 1;
@@ -26,11 +46,7 @@ function migrateSettings(raw) {
     if (!s.features || typeof s.features !== 'object') s.features = {};
     if (typeof s.features.shareOutsideTelegram !== 'boolean') s.features.shareOutsideTelegram = true;
   }
-  if (from < 4) {
-    // v4: hours are hardcoded now. Drop the two hour settings.
-    delete s.resetHour;
-    delete s.notifyHour;
-  }
+  if (from < 4) { delete s.resetHour; delete s.notifyHour; }
   s.version = DATA_VERSION;
   if (!s.timezone) s.timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Singapore';
   if (typeof s.notificationsOn !== 'boolean') s.notificationsOn = true;
@@ -45,14 +61,73 @@ function migrateToday(raw) {
   if (!t.date) t.date = new Date().toISOString().slice(0, 10);
   if (!Number.isInteger(t.count)) t.count = 0;
   if (!Array.isArray(t.notes)) t.notes = [];
-  // v3: shareable defaults to false (private). Old notes stay private unless ticked.
   t.notes = t.notes.map(n => ({ text: String(n.text || '').slice(0, 140), time: String(n.time || ''), shareable: typeof n.shareable === 'boolean' ? n.shareable : false }));
   return t;
 }
 
-// About / Bulletin Board: dab has full autonomy. Content lives in public/content/about.md.
-// The app fetches it and renders it. Lots of text is fine. No code changes needed to edit it.
-// Fallback is the built-in text below if the file can't be fetched.
+// ---- dates: day ends at 03:00, not midnight ----
+const DEFAULT_TZ = Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Singapore';
+function todayKey(d, tz) {
+  d = d || new Date();
+  let zone = tz;
+  if (!zone) { try { zone = state.settings.timezone; } catch (e) { zone = DEFAULT_TZ; } }
+  const fmt = (date, withHour) => new Intl.DateTimeFormat('en-CA', withHour
+    ? { timeZone: zone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', hour12: false }
+    : { timeZone: zone, year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(date);
+  const parts = fmt(d, true);
+  const get = (t) => parts.find(p => p.type === t) ? parts.find(p => p.type === t).value : '';
+  const hour = parseInt(get('hour'), 10) % 24;
+  if (hour < FIXED_RESET_HOUR) {
+    // Before 03:00 it is still yesterday's day. Format yesterday directly —
+    // never recurse with the same time of day (that loops forever).
+    const y = new Date(d); y.setDate(y.getDate() - 1);
+    const yp = fmt(y, false);
+    const yg = (t) => yp.find(p => p.type === t) ? yp.find(p => p.type === t).value : '';
+    return yg('year') + '-' + yg('month') + '-' + yg('day');
+  }
+  return get('year') + '-' + get('month') + '-' + get('day');
+}
+function timeNow() {
+  try { return new Intl.DateTimeFormat('en-GB', { timeZone: state.settings.timezone, hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date()); }
+  catch (e) { return ''; }
+}
+
+const state = {
+  today: { version: DATA_VERSION, date: todayKey(), count: 0, notes: [] },
+  settings: { version: DATA_VERSION, timezone: DEFAULT_TZ, notificationsOn: true, notifyOnlyIfEmpty: true, gardenOptIn: false, groupGardens: [], features: { gardenWeeklyShare: false, newRecapFormat: false, shareOutsideTelegram: true } },
+  gardenId: 'personal',
+};
+try { state.gardenId = new URLSearchParams(location.search).get('startapp') ? new URLSearchParams(location.search).get('startapp').replace('garden_', '') : 'personal'; } catch (e) {}
+
+// ---- storage: CloudStorage with a 500ms timeout, localStorage fallback ----
+// Telegram's CloudStorage callbacks never fire outside the Telegram client,
+// so without a timeout every save/load hangs forever and the UI freezes at 0.
+function withTimeout(promise, ms) {
+  return Promise.race([promise, new Promise((resolve) => setTimeout(() => resolve('__TIMEOUT__'), ms))]);
+}
+function csGet(key) {
+  if (!cs) { try { return Promise.resolve(localStorage.getItem(key)); } catch (e) { return Promise.resolve(null); } }
+  const p = new Promise((resolve) => {
+    try { cs.getItem(key, (err, v) => resolve(err ? null : v)); }
+    catch (e) { resolve(null); }
+  });
+  return withTimeout(p, CS_TIMEOUT_MS).then((v) => {
+    if (v === '__TIMEOUT__') { try { return localStorage.getItem(key); } catch (e) { return null; } }
+    return v;
+  });
+}
+function csSet(key, val) {
+  // Always write localStorage too, so a CloudStorage hang never loses data.
+  try { localStorage.setItem(key, val); } catch (e) {}
+  if (!cs) return Promise.resolve(true);
+  const p = new Promise((resolve) => {
+    try { cs.setItem(key, val, (err, ok) => resolve(!err && ok)); }
+    catch (e) { resolve(false); }
+  });
+  return withTimeout(p, CS_TIMEOUT_MS).then((v) => v !== '__TIMEOUT__');
+}
+
+// ---- About / Bulletin Board ----
 const ABOUT_FALLBACK = [
   { t: 'What this is', b: 'A tiny daily habit. Press, notice one good thing, move on.' },
   { t: 'How it works', b: 'Press to count, tag a note if you like, get a recap at 3am your time, start fresh.' },
@@ -60,205 +135,168 @@ const ABOUT_FALLBACK = [
 function renderMarkdown(md) {
   const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   let html = ''; let inList = false;
-  for (const raw of md.split('\n')) {
+  for (const raw of String(md || '').split('\n')) {
     const line = raw.trim();
-    if (line.startsWith('## ')) { if (inList) { html += '</ul>'; inList = false; } html += `<h3>${esc(line.slice(3))}</h3>`; }
-    else if (line.startsWith('# ')) { if (inList) { html += '</ul>'; inList = false; } html += `<h2>${esc(line.slice(2))}</h2>`; }
-    else if (line.startsWith('- ')) { if (!inList) { html += '<ul>'; inList = true; } html += `<li class="calm">${esc(line.slice(2))}</li>`; }
+    if (line.startsWith('## ')) { if (inList) { html += '</ul>'; inList = false; } html += '<h3>' + esc(line.slice(3)) + '</h3>'; }
+    else if (line.startsWith('# ')) { if (inList) { html += '</ul>'; inList = false; } html += '<h2>' + esc(line.slice(2)) + '</h2>'; }
+    else if (line.startsWith('- ')) { if (!inList) { html += '<ul>'; inList = true; } html += '<li class="calm">' + esc(line.slice(2)) + '</li>'; }
     else if (line === '' || line === '---') { if (inList) { html += '</ul>'; inList = false; } }
-    else { if (inList) { html += '</ul>'; inList = false; } html += `<p class="calm">${esc(line)}</p>`; }
+    else { if (inList) { html += '</ul>'; inList = false; } html += '<p class="calm">' + esc(line) + '</p>'; }
   }
   if (inList) html += '</ul>';
   return html;
 }
 async function loadAbout() {
-  const el = document.getElementById('aboutContent');
-  if (!el) return;
-  // 1) Live version from the server (this is what /edit_about in Telegram updates).
-  // 2) Static file public/content/about.md. 3) Built-in fallback.
+  const node = el('aboutContent');
+  if (!node) return;
   try {
     const res = await fetch('/api/about');
-    if (res.ok) { const j = await res.json(); if (j.text) { el.innerHTML = renderMarkdown(j.text); return; } }
-  } catch {}
+    if (res.ok) { const j = await res.json(); if (j.text) { node.innerHTML = renderMarkdown(j.text); return; } }
+  } catch (e) {}
   try {
     const res = await fetch('content/about.md');
     if (!res.ok) throw new Error('no about file');
-    const md = await res.text();
-    el.innerHTML = renderMarkdown(md);
-  } catch {
-    el.innerHTML = ABOUT_FALLBACK.map(s => `<h3>${s.t}</h3><p class="calm">${s.b}</p>`).join('');
+    node.innerHTML = renderMarkdown(await res.text());
+  } catch (e) {
+    node.innerHTML = ABOUT_FALLBACK.map(s => '<h3>' + s.t + '</h3><p class="calm">' + s.b + '</p>').join('');
   }
 }
 function initThemes() {
-  const sel = document.getElementById('themeSelect');
+  const sel = el('themeSelect');
   if (!sel || !window.GiveThanksThemes) return;
-  const saved = (() => { try { return localStorage.getItem('gt_theme'); } catch { return null; } })();
-  sel.innerHTML = window.GiveThanksThemes.listThemes().map(t => `<option value="${t.id}">${t.name}</option>`).join('');
-  sel.value = saved && window.GiveThanksThemes.THEMES[saved] ? saved : 'cream-forest';
-  window.GiveThanksThemes.applyTheme(sel.value);
-  sel.addEventListener('change', () => window.GiveThanksThemes.applyTheme(sel.value));
+  try {
+    const saved = (() => { try { return localStorage.getItem('gt_theme'); } catch (e) { return null; } })();
+    sel.innerHTML = window.GiveThanksThemes.listThemes().map(t => '<option value="' + t.id + '">' + t.name + '</option>').join('');
+    sel.value = saved && window.GiveThanksThemes.THEMES[saved] ? saved : 'cream-forest';
+    window.GiveThanksThemes.applyTheme(sel.value);
+  } catch (e) {}
 }
 
-const DEFAULT_TZ = Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Singapore';
-const state = {
-  today: { version: DATA_VERSION, date: todayKey(), count: 0, notes: [] },
-  settings: { version: DATA_VERSION, timezone: DEFAULT_TZ, notificationsOn: true, notifyOnlyIfEmpty: true, gardenOptIn: false, groupGardens: [], features: { gardenWeeklyShare: false, newRecapFormat: false, shareOutsideTelegram: true } },
-  gardenId: new URLSearchParams(location.search).get('startapp')?.replace('garden_', '') || 'personal',
-};
-function todayKey(d = new Date(), tz) {
-  // Day ends at 03:00, not midnight. If it's 01:00 and reset is 03:00, it's still yesterday's day.
-  // NOTE: this is called while `state` itself is still being initialised, so reading
-  // state.settings.timezone directly here throws "Cannot access 'state' before
-  // initialization" and kills the whole script before any button listeners are
-  // attached. Use the passed tz, or state if it exists yet, else DEFAULT_TZ.
-  let zone = tz;
-  if (!zone) {
-    try { zone = state.settings.timezone; } catch { zone = DEFAULT_TZ; }
-  }
-  const parts = new Intl.DateTimeFormat('en-CA', { timeZone: zone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', hour12: false }).formatToParts(d);
-  const get = (t) => parts.find(p => p.type === t)?.value;
-  let date = `${get('year')}-${get('month')}-${get('day')}`;
-  const hour = parseInt(get('hour'), 10) % 24;
-  if (hour < FIXED_RESET_HOUR) {
-    // Before 03:00 it is still yesterday's day. Do NOT recurse with the same
-    // time of day — that loops forever, because the hour is still < 3.
-    // Just format yesterday's date directly.
-    const y = new Date(d); y.setDate(y.getDate() - 1);
-    const yParts = new Intl.DateTimeFormat('en-CA', { timeZone: zone, year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(y);
-    const yGet = (t) => yParts.find(p => p.type === t)?.value;
-    return `${yGet('year')}-${yGet('month')}-${yGet('day')}`;
-  }
-  return date;
-}
-function timeNow() {
-  return new Intl.DateTimeFormat('en-GB', { timeZone: state.settings.timezone, hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date());
-}
-
-// ---- CloudStorage helpers (chunked) ----
-function csGet(key) {
-  return new Promise((resolve) => {
-    if (!cs) return resolve(localStorage.getItem(key));
-    cs.getItem(key, (err, v) => resolve(err ? null : v));
-  });
-}
-function csSet(key, val) {
-  return new Promise((resolve) => {
-    if (!cs) { localStorage.setItem(key, val); return resolve(true); }
-    cs.setItem(key, val, (err, ok) => resolve(!err && ok));
-  });
-}
+// ---- load / save (never block the UI, never wipe on error) ----
 async function loadToday() {
-  const meta = await csGet('gt_today_meta');
-  if (meta) {
-    try {
-      const m = migrateToday(JSON.parse(meta));
-      if (m.date === state.today.date) {
-        state.today.count = m.count || 0;
-        state.today.notes = [];
-        for (let i = 1; i <= 10; i++) {
-          const chunk = await csGet(`gt_today_notes_${i}`);
-          if (!chunk) break;
-          try { state.today.notes.push(...JSON.parse(chunk)); } catch { /* keep what we have, never wipe on a bad chunk */ }
+  try {
+    const meta = await csGet('gt_today_meta');
+    if (meta) {
+      try {
+        const m = migrateToday(JSON.parse(meta));
+        if (m.date === state.today.date) {
+          state.today.count = m.count || 0;
+          state.today.notes = [];
+          for (let i = 1; i <= 10; i++) {
+            const chunk = await csGet('gt_today_notes_' + i);
+            if (!chunk) break;
+            try { state.today.notes.push.apply(state.today.notes, JSON.parse(chunk)); } catch (e) {}
+          }
+          render(); return;
         }
-        render(); return;
+      } catch (e) {
+        showError("Couldn't load the new bits, your thanks are safe");
       }
-    } catch {
-      // Safe fallback: don't wipe the count on a parse error.
-      // Show the last known good state and let the user keep pressing.
-      document.getElementById('syncStatus').textContent = "Couldn't load the new bits, your thanks are safe";
     }
-  }
+  } catch (e) { /* keep defaults, never crash */ }
   state.today = { version: DATA_VERSION, date: state.today.date, count: 0, notes: [] };
-  await saveToday();
-}
-async function saveToday() {
-  await csSet('gt_today_meta', JSON.stringify({ version: DATA_VERSION, date: state.today.date, count: state.today.count }));
-  // chunk notes to stay under 4096 chars per value
-  const chunks = [];
-  let cur = [];
-  for (const n of state.today.notes) {
-    const test = [...cur, n];
-    if (JSON.stringify(test).length > 3800) { chunks.push(cur); cur = [n]; } else cur = test;
-  }
-  if (cur.length) chunks.push(cur);
-  for (let i = 0; i < Math.max(chunks.length, 1); i++) {
-    await csSet(`gt_today_notes_${i + 1}`, JSON.stringify(chunks[i] || []));
-  }
+  saveTodayBackground();
   render();
 }
+function saveTodayBackground() {
+  // Fire-and-forget: the UI already updated. A slow/failed save must never
+  // roll back or hide the count.
+  (async () => {
+    try {
+      await csSet('gt_today_meta', JSON.stringify({ version: DATA_VERSION, date: state.today.date, count: state.today.count }));
+      const chunks = []; let cur = [];
+      for (const n of state.today.notes) {
+        const test = cur.concat([n]);
+        if (JSON.stringify(test).length > 3800) { chunks.push(cur); cur = [n]; } else cur = test;
+      }
+      if (cur.length) chunks.push(cur);
+      for (let i = 0; i < Math.max(chunks.length, 1); i++) {
+        await csSet('gt_today_notes_' + (i + 1), JSON.stringify(chunks[i] || []));
+      }
+    } catch (e) { /* localStorage already has it; keep going */ }
+  })();
+}
 async function loadSettings() {
-  const raw = await csGet('gt_settings');
-  if (raw) { try { Object.assign(state.settings, migrateSettings(JSON.parse(raw))); } catch { /* keep defaults, never crash on old settings */ } }
-  // fill selects
-  const tzSel = document.getElementById('timezone');
-  const zones = ['Asia/Singapore', 'Asia/Kuala_Lumpur', 'Asia/Tokyo', 'Asia/Jakarta', 'Australia/Sydney', 'Europe/London', 'Europe/Paris', 'America/New_York', 'America/Los_Angeles', 'UTC'];
-  if (!zones.includes(state.settings.timezone)) zones.unshift(state.settings.timezone);
-  tzSel.innerHTML = zones.map(z => `<option ${z === state.settings.timezone ? 'selected' : ''}>${z}</option>`).join('');
-  // v4: no hour pickers — recap 03:00, notification 19:30, in your timezone.
-  document.getElementById('notificationsOn').checked = state.settings.notificationsOn;
-  document.getElementById('notifyOnlyIfEmpty').checked = state.settings.notifyOnlyIfEmpty;
-  document.getElementById('gardenOptIn').checked = state.settings.gardenOptIn;
+  try {
+    const raw = await csGet('gt_settings');
+    if (raw) { try { Object.assign(state.settings, migrateSettings(JSON.parse(raw))); } catch (e) {} }
+  } catch (e) {}
+  const tzSel = el('timezone');
+  if (tzSel) {
+    const zones = ['Asia/Singapore', 'Asia/Kuala_Lumpur', 'Asia/Tokyo', 'Asia/Jakarta', 'Australia/Sydney', 'Europe/London', 'Europe/Paris', 'America/New_York', 'America/Los_Angeles', 'UTC'];
+    if (zones.indexOf(state.settings.timezone) === -1) zones.unshift(state.settings.timezone);
+    tzSel.innerHTML = zones.map(z => '<option' + (z === state.settings.timezone ? ' selected' : '') + '>' + z + '</option>').join('');
+  }
+  const tzLabel = el('tzLabel'); if (tzLabel) tzLabel.textContent = state.settings.timezone;
+  const nOn = el('notificationsOn'); if (nOn) nOn.checked = state.settings.notificationsOn;
+  const nEmpty = el('notifyOnlyIfEmpty'); if (nEmpty) nEmpty.checked = state.settings.notifyOnlyIfEmpty;
+  const gOpt = el('gardenOptIn'); if (gOpt) gOpt.checked = state.settings.gardenOptIn;
+  render();
 }
 async function saveSettings() {
-  await csSet('gt_settings', JSON.stringify(state.settings));
+  try { await csSet('gt_settings', JSON.stringify(state.settings)); } catch (e) {}
   syncToServer();
 }
 
-// ---- sync to server (for scheduler + recap) ----
-async function syncToServer() {
-  const status = document.getElementById('syncStatus');
+// ---- sync to server (background only, 5s timeout, never blocks UI) ----
+function syncToServer() {
   try {
-    const res = await fetch('/api/sync', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ apiVersion: DATA_VERSION, initData: tg?.initData || '', today: state.today, settings: state.settings, gardenId: state.gardenId }),
-    });
-    if (res.ok) { status.textContent = 'Saved ✓ synced for recap'; }
-    else { status.textContent = 'Saved on this device — will sync when online'; }
-  } catch { status.textContent = 'Saved on this device — will sync when online'; }
-  if (tg?.HapticFeedback) tg.HapticFeedback.impactOccurred('light');
+    const ctrl = new AbortController();
+    setTimeout(() => { try { ctrl.abort(); } catch (e) {} }, 5000);
+    fetch('/api/sync', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: ctrl.signal,
+      body: JSON.stringify({ apiVersion: DATA_VERSION, initData: (tg && tg.initData) || '', today: state.today, settings: state.settings, gardenId: state.gardenId }),
+    }).then((res) => { if (res.ok) setText('syncStatus', 'Saved ✓ synced for recap'); else setText('syncStatus', 'Saved on this device — will sync when online'); })
+      .catch(() => setText('syncStatus', 'Saved on this device — will sync when online'));
+  } catch (e) { setText('syncStatus', 'Saved on this device — will sync when online'); }
+  try { if (tg && tg.HapticFeedback) tg.HapticFeedback.impactOccurred('light'); } catch (e) {}
 }
 
 // ---- UI ----
 const PLANTS = ['🌱', '🌿', '🌷', '🌻', '🌳'];
-function render() {
-  document.getElementById('todayDate').textContent = state.today.date;
-  document.getElementById('count').textContent = state.today.count;
-  document.getElementById('plant').textContent = PLANTS[Math.min(Math.floor(state.today.count / 3), PLANTS.length - 1)];
-  const list = document.getElementById('notesList');
-  // Per-note share checkbox. Unticked = private, blurred in any share. Default false.
-  list.innerHTML = state.today.notes.map((n, i) => `<li><label class="share-check"><input type="checkbox" data-share="${i}" ${n.shareable ? 'checked' : ''}> share</label> <b>#${i + 1}</b> ${n.time} — <span class="${n.shareable ? '' : 'private-note'}">${escapeHtml(n.text)}</span></li>`).reverse().join('');
-  list.querySelectorAll('input[data-share]').forEach(cb => cb.addEventListener('change', async (e) => {
-    const idx = parseInt(e.target.dataset.share, 10);
-    state.today.notes[idx].shareable = e.target.checked;
-    await saveToday(); syncToServer(); renderSharePreview();
-  }));
-  document.getElementById('gardenCount').textContent = `${state.today.count} flowers bloomed today (personal view)`;
-  document.getElementById('gardenField').textContent = '🌸 '.repeat(Math.min(state.today.count, 30)) || '🌱 Your garden is waiting for its first thanks today.';
-  renderSharePreview();
-}
+const STAGES = ['JUST SPROUTED', 'GROWING', 'NICE PATCH', 'BLOOMING', 'FULL GARDEN'];
+function plantIndex(count) { return Math.min(Math.floor(count / 3), PLANTS.length - 1); }
 function escapeHtml(s) { return String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
-
-// ---- Sharing outside Telegram: message or art page ----
-// Private notes are NEVER included as text. They appear as blurred blocks.
+function render() {
+  try {
+    setText('todayDate', state.today.date);
+    setText('count', String(state.today.count));
+    setText('countLabel', state.today.count === 1 ? 'thank today' : 'thanks today');
+    setText('plant', PLANTS[plantIndex(state.today.count)]);
+    setText('plantStage', STAGES[plantIndex(state.today.count)] + ' • ' + state.today.count + ' thanks today');
+    const list = el('notesList');
+    if (list) {
+      list.innerHTML = state.today.notes.map((n, i) => '<li><label class="share-check"><input type="checkbox" data-share="' + i + '"' + (n.shareable ? ' checked' : '') + '> share</label> <b>#' + (i + 1) + '</b> ' + escapeHtml(n.time || '') + ' — <span class="' + (n.shareable ? '' : 'private-note') + '">' + escapeHtml(n.text) + '</span></li>').reverse().join('');
+      list.querySelectorAll('input[data-share]').forEach(cb => cb.addEventListener('change', (e) => {
+        const idx = parseInt(e.target.dataset.share, 10);
+        state.today.notes[idx].shareable = e.target.checked;
+        saveTodayBackground(); syncToServer(); renderSharePreview();
+      }));
+    }
+    setText('gardenCount', state.today.count + ' flowers bloomed today (personal view)');
+    const field = el('gardenField');
+    if (field) field.textContent = state.today.count ? '🌸 '.repeat(Math.min(state.today.count, 30)) : '🌱 Your garden is waiting for its first thanks today.';
+    renderSharePreview();
+  } catch (e) { showError('Something went wrong showing your thanks — try pressing again.'); }
+}
 function buildShareText() {
-  const lines = [`🌱 Give Thanks — ${state.today.date}`, ``, `I said thanks ${state.today.count} time${state.today.count === 1 ? '' : 's'} today.`, ``];
-  state.today.notes.forEach((n, i) => lines.push(`${i + 1}. ${n.shareable ? n.text : '••• hidden •••'}`));
+  const lines = ['🌱 Give Thanks — ' + state.today.date, '', 'I said thanks ' + state.today.count + ' time' + (state.today.count === 1 ? '' : 's') + ' today.', ''];
+  state.today.notes.forEach((n, i) => lines.push((i + 1) + '. ' + (n.shareable ? n.text : '••• hidden •••')));
   return lines.join('\n');
 }
 function renderSharePreview() {
-  const el = document.getElementById('sharePreview');
-  if (!el) return;
+  const node = el('sharePreview');
+  if (!node) return;
   const shared = state.today.notes.filter(n => n.shareable).length;
-  el.innerHTML = `<b>Preview — what will go out:</b><br>${escapeHtml(buildShareText()).replace(/\n/g, '<br>')}<br><span class="fine">${shared} of ${state.today.notes.length} notes shared, ${state.today.notes.length - shared} blurred out. Unticked notes stay private.</span>`;
+  node.innerHTML = '<b>Preview — what will go out:</b><br>' + escapeHtml(buildShareText()).replace(/\n/g, '<br>') + '<br><span class="fine">' + shared + ' of ' + state.today.notes.length + ' notes shared, ' + (state.today.notes.length - shared) + ' blurred out. Unticked notes stay private.</span>';
 }
 async function shareAsMessage() {
   const text = buildShareText();
-  if (navigator.share) { try { await navigator.share({ title: 'Give Thanks', text }); return; } catch {} }
+  if (navigator.share) { try { await navigator.share({ title: 'Give Thanks', text: text }); return; } catch (e) {} }
   try { await navigator.clipboard.writeText(text); alert('Copied — paste it anywhere (WhatsApp, Instagram, Messages…)'); }
-  catch { alert(text); }
+  catch (e) { alert(text); }
 }
 function drawArtCard() {
-  // Pixel-art card, drawn on-device. No upload, no link.
   const c = document.createElement('canvas'); c.width = 1080; c.height = 1350;
   const x = c.getContext('2d');
   x.fillStyle = '#FFF6E5'; x.fillRect(0, 0, 1080, 1350);
@@ -270,62 +308,92 @@ function drawArtCard() {
   let y = 480;
   state.today.notes.forEach((n, i) => {
     x.font = '36px monospace'; x.fillStyle = '#2B2B2B';
-    if (n.shareable) { x.fillText(`${i + 1}. ${n.text.slice(0, 38)}`, 60, y); }
-    else { x.fillText(`${i + 1}. `, 60, y); x.fillStyle = '#8A8A8A'; x.fillRect(140, y - 28, 700, 36); }
+    if (n.shareable) { x.fillText((i + 1) + '. ' + n.text.slice(0, 38), 60, y); }
+    else { x.fillText((i + 1) + '. ', 60, y); x.fillStyle = '#8A8A8A'; x.fillRect(140, y - 28, 700, 36); }
     y += 64;
   });
-  x.fillStyle = '#D97B29'; x.font = '32px monospace'; x.fillText('made with Give Thanks', 60, 1260);
+  x.fillStyle = '#A0522D'; x.font = '32px monospace'; x.fillText('made with Give Thanks', 60, 1260);
   return c;
 }
 async function shareAsArt() {
   const canvas = drawArtCard();
   const blob = await new Promise(r => canvas.toBlob(r, 'image/png'));
-  const file = new File([blob], `give-thanks-${state.today.date}.png`, { type: 'image/png' });
-  if (navigator.canShare && navigator.canShare({ files: [file] })) { try { await navigator.share({ title: 'Give Thanks', files: [file] }); return; } catch {} }
+  const file = new File([blob], 'give-thanks-' + state.today.date + '.png', { type: 'image/png' });
+  if (navigator.canShare && navigator.canShare({ files: [file] })) { try { await navigator.share({ title: 'Give Thanks', files: [file] }); return; } catch (e) {} }
   const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = file.name; a.click();
 }
 function press(noteText) {
+  // Render FIRST, synchronously — never let storage/sync delay the visible count.
   state.today.count += 1;
   if (noteText) state.today.notes.push({ text: noteText.slice(0, 140), time: timeNow(), shareable: false });
-  const btn = document.getElementById('pressBtn');
-  btn.classList.remove('pop'); void btn.offsetWidth; btn.classList.add('pop');
-  saveToday(); syncToServer();
+  const btn = el('pressBtn');
+  if (btn) { btn.classList.remove('pop'); void btn.offsetWidth; btn.classList.add('pop'); }
+  render();
+  saveTodayBackground();
+  syncToServer();
 }
-
-document.getElementById('pressBtn').addEventListener('click', () => {
-  const note = document.getElementById('noteInput').value.trim();
-  document.getElementById('noteInput').value = '';
-  press(note);
-});
-document.getElementById('addNoteBtn').addEventListener('click', () => {
-  const note = document.getElementById('noteInput').value.trim();
-  if (!note) return;
-  document.getElementById('noteInput').value = '';
-  if (state.today.notes.length === 0 && state.today.count === 0) press(note);
-  else { state.today.notes.push({ text: note.slice(0, 140), time: timeNow(), shareable: false }); if (state.today.count === 0) state.today.count = 1; saveToday(); syncToServer(); }
-});
-document.getElementById('saveSettings').addEventListener('click', async () => {
-  state.settings.timezone = document.getElementById('timezone').value;
-  state.settings.notificationsOn = document.getElementById('notificationsOn').checked;
-  state.settings.notifyOnlyIfEmpty = document.getElementById('notifyOnlyIfEmpty').checked;
-  await saveSettings();
-  tg?.showAlert?.('Settings saved 🌱');
-});
-document.getElementById('gardenOptIn').addEventListener('change', async (e) => { state.settings.gardenOptIn = e.target.checked; await saveSettings(); render(); });
-document.getElementById('clearToday').addEventListener('click', async () => {
-  state.today = { version: DATA_VERSION, date: state.today.date, count: 0, notes: [] };
-  await saveToday(); syncToServer();
-});
-document.querySelectorAll('.tabs button').forEach(b => b.addEventListener('click', () => {
+function switchTab(name) {
   document.querySelectorAll('.tabs button').forEach(x => x.classList.remove('active'));
   document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
-  b.classList.add('active');
-  document.getElementById('tab-' + b.dataset.tab).classList.add('active');
-}));
-initThemes(); loadAbout();
-document.getElementById('shareBtn')?.addEventListener('click', () => { document.getElementById('shareSection').scrollIntoView({ behavior: 'smooth' }); renderSharePreview(); });
-document.getElementById('shareMessageBtn')?.addEventListener('click', shareAsMessage);
-document.getElementById('shareArtBtn')?.addEventListener('click', shareAsArt);
-document.getElementById('copyShareBtn')?.addEventListener('click', async () => { try { await navigator.clipboard.writeText(buildShareText()); alert('Copied'); } catch { alert(buildShareText()); } });
+  const btn = document.querySelector('.tabs button[data-tab="' + name + '"]');
+  if (btn) btn.classList.add('active');
+  const tab = el('tab-' + name);
+  if (tab) tab.classList.add('active');
+}
 
-(async () => { await loadSettings(); state.today.date = todayKey(); await loadToday(); render(); })();
+// ---- LISTENERS FIRST: attached before any async init, so a load failure
+// can never leave the buttons dead. Every handler is null-guarded. ----
+function attachListeners() {
+  const pressBtn = el('pressBtn');
+  if (pressBtn) pressBtn.addEventListener('click', () => {
+    const input = el('noteInput');
+    const note = input ? input.value.trim() : '';
+    if (input) input.value = '';
+    press(note);
+  });
+  const noteInput = el('noteInput');
+  if (noteInput) noteInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); if (pressBtn) pressBtn.click(); } });
+  const addNoteBtn = el('addNoteBtn');
+  if (addNoteBtn) addNoteBtn.addEventListener('click', () => {
+    const input = el('noteInput');
+    const note = input ? input.value.trim() : '';
+    if (!note) return;
+    if (input) input.value = '';
+    press(note);
+  });
+  const saveBtn = el('saveSettings');
+  if (saveBtn) saveBtn.addEventListener('click', async () => {
+    const tz = el('timezone'); if (tz) state.settings.timezone = tz.value;
+    const nOn = el('notificationsOn'); if (nOn) state.settings.notificationsOn = nOn.checked;
+    const nEmpty = el('notifyOnlyIfEmpty'); if (nEmpty) state.settings.notifyOnlyIfEmpty = nEmpty.checked;
+    await saveSettings();
+    try { if (tg && tg.showAlert) tg.showAlert('Settings saved 🌱'); } catch (e) {}
+    const tzLabel = el('tzLabel'); if (tzLabel) tzLabel.textContent = state.settings.timezone;
+    state.today.date = todayKey(); render();
+  });
+  const gardenOptIn = el('gardenOptIn');
+  if (gardenOptIn) gardenOptIn.addEventListener('change', async (e) => { state.settings.gardenOptIn = e.target.checked; await saveSettings(); render(); });
+  const clearBtn = el('clearToday');
+  if (clearBtn) clearBtn.addEventListener('click', () => {
+    state.today = { version: DATA_VERSION, date: state.today.date, count: 0, notes: [] };
+    render(); saveTodayBackground(); syncToServer();
+  });
+  document.querySelectorAll('.tabs button').forEach(b => b.addEventListener('click', () => switchTab(b.dataset.tab)));
+  const goShare = el('goShareBtn');
+  if (goShare) goShare.addEventListener('click', () => { switchTab('share'); renderSharePreview(); });
+  const shareMsg = el('shareMessageBtn'); if (shareMsg) shareMsg.addEventListener('click', shareAsMessage);
+  const shareArt = el('shareArtBtn'); if (shareArt) shareArt.addEventListener('click', shareAsArt);
+  const copyShare = el('copyShareBtn');
+  if (copyShare) copyShare.addEventListener('click', async () => { try { await navigator.clipboard.writeText(buildShareText()); alert('Copied'); } catch (e) { alert(buildShareText()); } });
+}
+attachListeners();
+render();
+
+// ---- init, each step isolated so one failure never kills the rest ----
+(async () => {
+  try { initThemes(); } catch (e) {}
+  try { await loadAbout(); } catch (e) {}
+  try { await loadSettings(); } catch (e) {}
+  try { state.today.date = todayKey(); await loadToday(); } catch (e) {}
+  try { render(); } catch (e) {}
+})();
