@@ -48,10 +48,17 @@ function defaultUser(chatId) {
   };
 }
 function getUser(id, chatId) {
-  if (!users.has(id)) users.set(id, defaultUser(chatId || id));
+  // Recaps and nudges must ONLY ever go to the user's private 1:1 chat.
+  // A private chat's id IS the user id (positive); group ids are negative.
+  // BUG (2026-11-17): this used to save wherever the last command came
+  // from, so dab's /today in the group at 02:56 overwrote their 1:1 chat
+  // with the group id, and the 03:00 recap — personal notes included —
+  // went to the group instead of 1:1. Never again: chatId is always the
+  // user id, and any old record holding a group id is healed here.
+  if (!users.has(id)) users.set(id, defaultUser(id));
   else users.set(id, migrateUser(users.get(id))); // migrate on read — v1 data keeps working in v2
   const u = users.get(id);
-  if (chatId) u.chatId = chatId;
+  if (u.chatId !== id) u.chatId = id;
   return u;
 }
 function saveSettings() {
@@ -74,7 +81,11 @@ function loadSettings() {
       // v1 records have no version — migrateUser() fills defaults and keeps unknown fields.
       const u = migrateUser({ ...defaultUser(s.chatId), ...s });
       u.today = { version: CURRENT_VERSION, date: localDateStr(new Date(), u.timezone), count: 0, notes: [] };
-      users.set(Number(id) || id, u);
+      // Heal records saved before the 2026-11-17 fix that hold a group id
+      // as chatId (recaps must only go to the private 1:1 chat = user id).
+      const uid = Number(id) || id;
+      if (u.chatId !== uid) u.chatId = uid;
+      users.set(uid, u);
     }
   } catch (e) { console.error('loadSettings', e.message); }
 }
@@ -155,6 +166,29 @@ bot.command('today', (ctx) => {
   const u = getUser(ctx.from.id, ctx.chat.id);
   ctx.reply(u.today.count ? `Today: ${u.today.count} thanks 🌱` : 'No thanks yet today. Fresh day, whenever you’re ready.');
 });
+bot.command('recap', async (ctx) => {
+  // Instant recap, on demand — same full list as the 03:00 scheduled recap
+  // (every note, no blurs; the share tick only affects sharing outside
+  // Telegram). It does NOT reset the day; the 03:00 recap still does that.
+  // It is a backup for when the scheduled recap fails or you just want
+  // the list now. Privacy, learned 2026-11-17: a personal recap must never
+  // be posted in a group. So in a group this DMs the full recap to whoever
+  // asked, and only leaves a short note in the group. In 1:1 it replies
+  // right there.
+  const u = getUser(ctx.from.id, ctx.chat.id);
+  const text = formatRecap(u, localDateStr(new Date(), u.timezone));
+  if (ctx.chat.type === 'private') {
+    for (const part of splitMessage(text)) await ctx.reply(part);
+    return;
+  }
+  try {
+    for (const part of splitMessage(text)) await bot.telegram.sendMessage(ctx.from.id, part);
+    await ctx.reply('Sent your full recap to your 1:1 chat 🌱 — your notes stay private.');
+  } catch (e) {
+    // 403 = the bot can't DM them yet (they never tapped /start in 1:1).
+    await ctx.reply('I couldn’t send it privately — tap /start in a 1:1 chat with me first, then try /recap again.');
+  }
+});
 bot.command('settings', (ctx) => ctx.reply('There are no settings to fiddle with — recap is 3am, nudge is 7:30pm, in your timezone. Open the app:', openKeyboard()));
 bot.command('about', async (ctx) => {
   // Show the current Bulletin Board text in chat, plus a button to open it.
@@ -216,13 +250,30 @@ bot.command('stop', (ctx) => {
 });
 bot.command('garden', async (ctx) => {
   // In a group: create a garden for that group. In 1:1: explain.
+  // NOTE (2026-11-17): /today answered in groups but /garden stayed silent.
+  // Delivery, polling and send rights were all fine, so the failure was in
+  // this reply itself — the Join button (webApp + ?startapp=garden_<id>).
+  // Telegram rejects a bad button URL by failing the whole send, with no
+  // message at all. So: log the receipt, try the button, and if it fails
+  // fall back to the same join link as plain text (Telegram auto-links it,
+  // and the Mini App reads gardenId from ?startapp= in the URL either way).
+  // The exact Telegram error lands in Render logs via bot.catch.
+  console.log('[give-thanks] /garden from', ctx.chat.type, ctx.chat.id, 'by', ctx.from.id);
   if (ctx.chat.type === 'group' || ctx.chat.type === 'supergroup') {
     const gid = String(ctx.chat.id);
     if (!gardens.has(gid)) gardens.set(gid, { title: ctx.chat.title || 'Group garden', members: new Set(), countToday: 0, date: localDateStr(new Date(), 'Asia/Singapore') });
-    await ctx.reply(
-      `🌸 This group now has a Give Thanks garden.\n\nTap below to join (opt-in, anonymous). Each thanks you log adds a flower here — no names, no note text shared.`,
-      Markup.inlineKeyboard([[Markup.button.webApp('🌸 Join this garden', `${MINI_APP_URL}?startapp=garden_${gid}`)]])
-    );
+    const joinUrl = `${MINI_APP_URL}?startapp=garden_${gid}`;
+    try {
+      await ctx.reply(
+        `🌸 This group now has a Give Thanks garden.\n\nTap below to join (opt-in, anonymous). Each thanks you log adds a flower here — no names, no note text shared.`,
+        Markup.inlineKeyboard([[Markup.button.webApp('🌸 Join this garden', joinUrl)]])
+      );
+    } catch (e) {
+      console.error('[give-thanks] /garden button reply failed:', e.message, '— sending plain link instead');
+      await ctx.reply(
+        `🌸 This group now has a Give Thanks garden.\n\nTap to join (opt-in, anonymous). Each thanks you log adds a flower here — no names, no note text shared.\n\n${joinUrl}`
+      );
+    }
   } else {
     await ctx.reply('Add me to a Telegram group and send /garden there to create a garden just for that group. Or open the app to see your personal garden:', openKeyboard());
   }
@@ -324,6 +375,9 @@ async function tick() {
   const now = new Date();
   for (const [id, u] of users) {
     if (u.blocked) continue;
+    // Belt and braces: the send target is always the private 1:1 chat
+    // (user id). Never a group — see getUser, 2026-11-17 recap bug.
+    if (u.chatId !== id) u.chatId = id;
     let parts;
     try { parts = localParts(now, u.timezone); } catch { parts = localParts(now, 'Asia/Singapore'); }
     // Fixed times (v4), in the user's timezone: notify 19:30, recap/reset 03:00.
@@ -355,8 +409,24 @@ async function tick() {
 }
 cron.schedule('* * * * *', () => { tick().catch(e => console.error('tick', e.message)); });
 
+// ---- Telegram command menu (what users see when they type /) ----
+// Set on every start so it stays in sync with the code — no BotFather
+// step needed. Owner-only /edit_about and /cancel are deliberately NOT
+// listed: everyone would see them, and only the owner can use them.
+const BOT_COMMANDS = [
+  { command: 'start', description: 'Open Give Thanks and start the habit' },
+  { command: 'open', description: 'Open the counter' },
+  { command: 'today', description: 'See today’s thanks so far' },
+  { command: 'recap', description: 'Get today’s full recap now' },
+  { command: 'garden', description: 'Create a garden for this group' },
+  { command: 'about', description: 'Read the Bulletin Board' },
+  { command: 'settings', description: 'Recap 3am, nudge 7:30pm — in your timezone' },
+  { command: 'stop', description: 'Pause recaps and nudges' },
+];
+
 // ---- start ----
 app.listen(PORT, () => console.log(`[give-thanks] Mini App at http://localhost:${PORT} — set MINI_APP_URL to your public URL for Telegram`));
+if (BOT_TOKEN) bot.telegram.setMyCommands(BOT_COMMANDS).then(() => console.log('[give-thanks] command menu set')).catch(e => console.error('setMyCommands', e.message));
 if (BOT_TOKEN) bot.launch().then(() => console.log('[give-thanks] bot polling started')).catch(e => console.error('bot launch', e.message));
 process.once('SIGINT', () => { try { if (BOT_TOKEN) bot.stop('SIGINT'); } catch (e) {} process.exit(0); });
 process.once('SIGTERM', () => { try { if (BOT_TOKEN) bot.stop('SIGTERM'); } catch (e) {} process.exit(0); });

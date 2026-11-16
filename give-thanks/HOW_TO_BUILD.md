@@ -100,6 +100,13 @@ Note: polling (used in MVP) works on Render/Railway. Webhooks are more efficient
 6. Wait for reset → recap arrives in chat, count goes to 0 on next open.
 7. Add bot to a test Telegram group, send `/garden` → bot posts join link, tap it, opt in, press in the Mini App → garden flower count goes up, no name shown.
 8. Open Science tab → text reads well, links work.
+9. Send `/recap` → full list arrives, unblurred. In a group it arrives by DM, never posted in the group.
+
+### Bot commands (menu)
+The command menu is set by `server.js` on startup (`setMyCommands`), so it stays in sync with the code — no BotFather step needed. Type `/` in any chat with the bot to see it.
+- `/start` — welcome + Open button. `/open` — open the counter. `/today` — today's count. `/recap` — full instant recap, now. `/garden` — create a group garden (groups only). `/about` — Bulletin Board text. `/settings` — recap 3am / nudge 7:30pm. `/stop` — pause recaps and nudges.
+- `/recap` does not reset the day; the 03:00 recap still does that. In a group it DMs the full recap to whoever asked (personal notes never post in a group); in 1:1 it replies there. If the bot can't DM someone (they never tapped /start in 1:1), it says so in the group.
+- Owner-only, not in the menu: `/edit_about` (1:1 only), `/cancel`.
 
 ## 6. Common gotchas
 - **Mini App won't open:** URL must be HTTPS and return 200. Check BotFather Menu Button URL matches `MINI_APP_URL` exactly, no trailing slash mismatch.
