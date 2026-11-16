@@ -8,8 +8,8 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800;900&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
-<script src="themes.js?v=20261117i"></script>
-<link rel="stylesheet" href="style.css?v=20261117i">
+<script src="themes.js?v=20261117j"></script>
+<link rel="stylesheet" href="style.css?v=20261117j">
 </head>
 <body>
 <div id="loadingCover" class="loading-cover">
@@ -40,17 +40,24 @@
     <h3 class="list-heading">Today's list <span class="list-note">tick = shareable · unticked = blurred out · × deletes that thanks</span></h3>
     <ul id="notesList" class="notes"></ul>
     <button id="goShareBtn" class="small-btn share-btn" type="button">Share today ↗</button>
+    <button id="sendRecapBtn" class="small-btn recap-btn" type="button">Send today's recap to chat</button>
+    <p class="sync" id="recapStatus">Sends your list to your 1:1 chat with the bot, any time</p>
     <p class="sync" id="syncStatus">Saved on this device</p>
   </section>
 
-  <!-- GARDEN -->
+  <!-- GARDEN — parked for v1: the tab stays, the content is blurred out
+       with a "we're still working on this!" card on top. -->
   <section id="tab-garden" class="tab">
     <h2>🌸 The Garden</h2>
-    <p class="calm">Anonymous, opt-in. Each thanks adds a flower. No names, no likes, no ranking.</p>
-    <label class="toggle"><input type="checkbox" id="gardenOptIn"> Join the personal garden</label>
-    <div class="garden-field" id="gardenField">🌱 Your garden is waiting for its first thanks today.</div>
-    <p class="calm" id="gardenCount">0 flowers bloomed today</p>
-    <p class="calm">Group garden? Add the bot to a Telegram group and send <code>/garden</code> there. Only members of that group can join it.</p>
+    <div class="garden-soon">
+      <div class="garden-blur">
+        <p class="calm">Anonymous, opt-in. Each thanks adds a flower. No names, no likes, no ranking.</p>
+        <label class="toggle"><input type="checkbox" id="gardenOptIn"> Join the personal garden</label>
+        <div class="garden-field" id="gardenField">🌱 Your garden is waiting for its first thanks today.</div>
+        <p class="calm" id="gardenCount">0 flowers bloomed today</p>
+      </div>
+      <div class="garden-soon-card">🌱<br>we're still working on this!</div>
+    </div>
   </section>
 
   <!-- SHARE -->
@@ -79,6 +86,6 @@
     <button data-tab="about" type="button">📋 About</button>
   </nav>
 </div>
-<script src="app.js?v=20261117i"></script>
+<script src="app.js?v=20261117j"></script>
 </body>
 </html>

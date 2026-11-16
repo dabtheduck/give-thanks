@@ -16,15 +16,9 @@ This is the step-by-step to get the MVP in `~/workspace/give-thanks/` running to
 4. Username: must end in `bot`, e.g. `GiveThanksCounterBot` (pick what's free)
 5. Copy the token BotFather gives you. It looks like `123456:ABC-DEF...`
 6. In BotFather, send `/setmenubutton` → pick your bot → send the Mini App URL once you have it (see §4) with text “Open Give Thanks”.
-7. Optional: `/setcommands` and paste:
+7. Optional: `/setcommands` and paste (v1 — only `/start` is listed; `/recap` and `/edit_about` are owner-only and hidden):
 ```
 start - Start Give Thanks
-open - Open the counter
-today - See today's count
-settings - Open settings
-garden - Create or join a group garden
-about - About / Bulletin Board
-stop - Pause notifications
 ```
 
 Keep the token secret. Never commit `.env` to git.
@@ -41,7 +35,7 @@ npm start
 What starts:
 - Express on `http://localhost:3000` serves `public/` (the Mini App)
 - Telegraf bot polling (no webhook needed locally)
-- Scheduler ticking every 60 seconds, checking the fixed 03:00 / 19:30 times in each user's timezone
+- v1 has NO scheduler: no 19:30 nudge, no 03:00 recap message. The day still ends at 03:00 — the counter resets then (app-side day boundary).
 
 Test in Telegram:
 - Open your bot, send `/start`, tap “Open Give Thanks”.
@@ -53,9 +47,9 @@ give-thanks/
   SPEC.md                 Full spec (this project)
   HOW_TO_BUILD.md         This file
   README.md               Quick start for anyone cloning it
-  package.json            Node 20, express, telegraf, node-cron
+  package.json            Node 20, express, telegraf (node-cron is still listed but unused since v1 removed the scheduler)
   .env.example            BOT_TOKEN, MINI_APP_URL, PORT
-  server.js               Everything: Express + Bot + Scheduler in one file for MVP
+  server.js               Everything: Express + Bot in one file for MVP (no scheduler in v1)
   public/
     index.html            Mini App shell, tabs: Counter / Garden / Science / Settings
     style.css             Cozy rough pixel art, cream / forest / burnt orange
@@ -66,9 +60,9 @@ give-thanks/
 ### Key design decisions in code
 - **CloudStorage first:** `app.js` saves today to `Telegram.WebApp.CloudStorage` immediately on press, so the counter works even if the server is briefly down. Keys: `gt_today_meta`, `gt_today_notes_1`, `gt_today_notes_2`, `gt_settings`.
 - **Sync second:** after saving locally, `app.js` POSTs to `/api/sync` with the press / settings. The server validates Telegram `initData` (HMAC with bot token) before trusting `user_id`.
-- **Ephemeral server store:** `server.js` keeps `users` in memory + `data.json` for *settings only*. Today's notes are in memory, keyed by user, and deleted after recap. Restarting the server loses today's unsent notes — that's acceptable for MVP, and the CloudStorage copy means the user still sees their count. For production, swap the in-memory map for Cloudflare KV / Upstash Redis with TTL 36h.
-- **Scheduler:** `node-cron` every minute. For each user, compute local time with `Intl.DateTimeFormat(..., { timeZone })`. If local time is 19:30 → notify once. If it is 03:00 → send recap, clear.
-- **Group garden:** `server.js` handles `/garden` in groups. Garden ID = group chat_id. Membership is checked with `bot.telegram.getChatMember`. Garden view in the Mini App is a grid of pixel flowers, count only, no names.
+- **Ephemeral server store:** `server.js` keeps `users` in memory + `data.json` for *settings only*. Today's notes are in memory, keyed by user, and overwritten by the next sync. Restarting the server loses today's server copy — that's acceptable for MVP, and the CloudStorage copy means the user still sees their count (the recap button sends the app's own list, so it works even when the server copy is empty). For production, swap the in-memory map for Cloudflare KV / Upstash Redis with TTL 36h.
+- **Recap (v1, on demand — no scheduler):** the app's “Send today’s recap to chat” button POSTs today’s list to `/api/recap` (validated `initData`); the server formats it with `formatRecap` and sends it to the user’s 1:1 chat. It works at any time and does not reset the day — the day ends at 03:00, when the app’s counter resets on next open. Owner-only `/recap` in chat reads the server’s copy instead (same text, no reset).
+- **Group garden:** parked for v1. The Garden tab shows a blurred “we’re still working on this!” card. The `/garden` command and the `/api/garden` aggregation are dormant in the code, not deleted.
 - **About / Bulletin Board:** content is `public/content/about.md`. Edit that file, write as much as you like, no code changes needed. The app fetches and renders it.
 
 ## 4. Give the Mini App a public HTTPS URL
@@ -95,25 +89,25 @@ Note: polling (used in MVP) works on Render/Railway. Webhooks are more efficient
 1. `/start` → bot replies, button opens Mini App.
 2. Press + 3 times, add notes to 2 of them → count = 3, notes show.
 3. Reload Mini App → count still 3 (CloudStorage).
-4. In Settings, set timezone to your zone. Times are fixed (03:00 recap, 19:30 notify), so to test the recap quickly, temporarily change the fixed times in lib/migrations.js, restart, then change them back.
-5. Wait → notification arrives (only if you haven't pressed — press once first to test the skip, then test again with a fresh test user / reset).
-6. Wait for reset → recap arrives in chat, count goes to 0 on next open.
-7. Add bot to a test Telegram group, send `/garden` → bot posts join link, tap it, opt in, press in the Mini App → garden flower count goes up, no name shown.
-8. Open Science tab → text reads well, links work.
-9. Send `/recap` → full list arrives, unblurred. In a group it arrives by DM, never posted in the group. If today is empty, it also shows the last recap (yesterday's list) — the server keeps one day back for exactly this.
-10. Leave the app open across 03:00, press after 03:00 → the new day starts fresh at 1 and `/recap` shows it. Reopen the app → it re-syncs on open, so a Render restart/redeploy can't lose today's list. A sync dated before today is ignored by the server (check Render logs for "sync ignored stale today").
+4. The day ends at 03:00 in your timezone (fixed). Leave the app open across 03:00, press after 03:00 → the new day starts fresh at 1.
+5. Tap “Send today’s recap to chat” in the Counter tab → the full list arrives in your 1:1 chat with the bot, unblurred. It works at any time and does not reset the day.
+6. Garden tab → blurred content with a “we’re still working on this!” card.
+7. Open About tab → text reads well, links work.
+8. Send `/recap` (owner-only, hidden from the menu) → full list arrives, from the server’s copy. In a group it arrives by DM, never posted in the group. It reads the server’s today, so if the app hasn’t re-synced since a restart it can say 0 even though the app shows thanks — reopen the app and try again, or use the recap button instead (that one sends the app’s own list).
+9. Leave the app open across 03:00, press after 03:00 → the new day starts fresh at 1 and the counter resets on next open. Reopen the app → it re-syncs on open, so a Render restart/redeploy can’t lose today’s list from the app’s side. A sync dated before today is ignored by the server (check Render logs for "sync ignored stale today").
 
 ### Bot commands (menu)
-The command menu is set by `server.js` on startup (`setMyCommands`), so it stays in sync with the code — no BotFather step needed. Type `/` in any chat with the bot to see it.
-- `/start` — welcome + Open button. `/open` — open the counter. `/today` — today's count. `/recap` — full instant recap, now. `/garden` — create a group garden (groups only). `/about` — Bulletin Board text. `/settings` — recap 3am / nudge 7:30pm. `/stop` — pause recaps and nudges.
-- `/recap` does not reset the day; the 03:00 recap still does that. In a group it DMs the full recap to whoever asked (personal notes never post in a group); in 1:1 it replies there. If the bot can't DM someone (they never tapped /start in 1:1), it says so in the group. If today is empty it falls back to the last recap, kept in `u.lastRecap` (saved by the 03:00 reset before it wipes the day, persisted in `data.json`).
-- Owner-only, not in the menu: `/edit_about` (1:1 only), `/cancel`.
+The command menu is set by `server.js` on startup (`setMyCommands`), so it stays in sync with the code — no BotFather step needed. Type `/` in any chat with the bot to see it. v1: only `/start` is listed.
+- `/start` — welcome + Open button. The welcome text says the day runs until 3am (night owls can review the list before bed), the counter resets at 3am, and the recap button in the app sends the list to the chat any time.
+- `/recap` does not reset the day. It reads the server’s copy of today (not the app’s), so it can say 0 after a restart until the app re-syncs on open. In a group it DMs the full recap to whoever asked (personal notes never post in a group); in 1:1 it replies there. If the bot can't DM someone (they never tapped /start in 1:1), it says so in the group.
+- Owner-only, not in the menu: `/recap` (1:1 or group DM, owner only), `/edit_about` (1:1 only), `/cancel`.
 
 ## 6. Common gotchas
 - **Mini App won't open:** URL must be HTTPS and return 200. Check BotFather Menu Button URL matches `MINI_APP_URL` exactly, no trailing slash mismatch.
-- **“Bot blocked” / 403 on recap:** user blocked the bot. Scheduler marks them blocked and stops. They need to /start again.
-- **Wrong reset time:** almost always timezone. Check Settings → timezone is e.g. `Asia/Singapore`, not UTC. The scheduler uses that zone.
-- **Notes missing from recap:** the press saved to CloudStorage but the sync POST failed (server down / initData invalid). Check server logs for `/api/sync`. The CloudStorage copy is the fallback — the app will offer a “Send recap now” button if it detects a missed reset.
+- **“Bot blocked” / 403 on recap:** user blocked the bot. They need to /start again.
+- **Wrong reset time:** almost always timezone. The app’s day ends at 03:00 in the timezone it detected (or stored). Check the app’s stored timezone.
+- **Notes missing from /recap:** the press saved to CloudStorage but the sync POST failed (server down / initData invalid), or the server restarted since. Check server logs for `/api/sync`. The CloudStorage copy is the fallback — the app’s “Send today’s recap to chat” button sends the app’s own list, so it works even when the server copy is empty.
+- **Bot deaf after a deploy:** during a Render swap the old and new instances can both try to poll at once; Telegram answers 409 and the new instance gives up. `bot.launch()` now retries (up to 6 attempts, 10s apart). If it still doesn’t answer, Restart Service in Render.
 - **CloudStorage 4096-char limit:** notes are chunked in `app.js`. Don't store the whole day in one key.
 - **Telegram message limit:** recap >4096 chars is split into 2 messages in `server.js`.
 - **Server's today is ephemeral:** a Render restart or redeploy wipes `u.today` (it is never saved to `data.json`); the app re-syncs on open, so the app is the source of truth. If `/recap` says 0 but the app shows thanks, reopen the app and try `/recap` again.
@@ -122,10 +116,9 @@ The command menu is set by `server.js` on startup (`setMyCommands`), so it stays
 ## 7. What to do next after MVP works
 1. Move the ephemeral store to Cloudflare KV / Upstash with TTL.
 2. Switch polling → webhook.
-3. Add weekly anonymous garden share.
+3. Finish the garden (un-blur the tab, bring back `/garden`).
 4. Write your About / Bulletin Board text in public/content/about.md — as much as you like.
-5. Add a “Send recap now” manual button and a missed-day catch-up.
-6. Privacy page + delete-my-data (`/delete` wipes settings + today).
+5. Privacy page + delete-my-data (`/delete` wipes settings + today).
 
 ## 8. Costs
 - Telegram Bot API: free.

@@ -1,5 +1,5 @@
 # Give Thanks — Full Product Spec
-**Version:** 1.0 MVP, data v4 — 17 Nov 2026 (times hardcoded 03:00 / 19:30, see §3)
+**Version:** 1.0 MVP, data v4 — 17 Nov 2026 (v1: no scheduled nudge/recap; the day ends at 03:00, see §3)
 **Platform:** Telegram Bot + Telegram Mini App
 **Audience:** Everyone. Cozy pixel art, rougher / retro-RPG feel, for guys and girls. Low cortisol throughout.
 
@@ -8,7 +8,7 @@ Give Thanks is a daily gratitude counter.
 
 Press a big button once = +1 thanks. Optionally tag a short note to that press, e.g. “warm soup”, “my sister called”, “sun on my face”.
 
-At the end of the day, the bot sends you a recap message in your 1:1 chat with the bot. That recap *is* the archive. There is no long-term database of your history. You can search / scroll your Telegram chat to find past days.
+Whenever you want, tap “Send today’s recap to chat” in the app and the bot sends you a recap message in your 1:1 chat with the bot. That recap *is* the archive. There is no long-term database of your history. You can search / scroll your Telegram chat to find past days.
 
 Each user's 1:1 chat with the bot is their identity. No username, email, or password. Telegram `chat_id` / `user_id` is the ID.
 
@@ -17,16 +17,17 @@ Each user's 1:1 chat with the bot is their identity. No username, email, or pass
 2. Big pixel button in the centre. Press it. Haptic + soft pop + tiny pixel sparkle / flower bloom.
 3. Count for today goes up. An optional note field sits right under the button. Type a note and press + again, or press + first and add a note to the last press.
 4. You can press as many times as you like. No timers, no combos, no penalties.
-5. At 7:30pm your time, the bot sends one gentle prompt, only if you haven't pressed yet today.
-6. At 3am your time, the bot sends the daily recap, clears today, and starts a fresh day.
+5. Your day runs until 3am, so night owls can add thanks and look back over the list before bed — the counter resets at 3am, and a fresh day starts.
+6. Tap “Send today’s recap to chat” any time to save the day’s list in your 1:1 chat. It works at any time and does not reset the day.
 
 ### Non-goals for MVP
 - No streaks shown as a number to protect, no leaderboards, no likes, no public profiles.
 - No streak-shaming copy. Missing a day is neutral: the recap just says “No thanks logged today — fresh start tomorrow” if applicable.
 - No medical claims. The About / Bulletin Board page is educational only.
+- No scheduled notifications and no scheduled recap in v1 (removed 2026-11-17: the server could not be trusted to have the day’s list at 03:00, so the recap is on demand from the app instead).
 
 ## 3. Screens (Mini App)
-All in one Mini App, bottom tabs: Counter | Garden | Science | Settings
+All in one Mini App, bottom tabs: Counter | Garden | Share | About
 
 ### 3.1 Counter (home / first screen)
 - Today's date, in the user's timezone.
@@ -41,12 +42,10 @@ All in one Mini App, bottom tabs: Counter | Garden | Science | Settings
 ### 3.2 Settings
 - Timezone: auto-detected from device (`Intl.DateTimeFormat().resolvedOptions().timeZone`), editable via a dropdown of IANA zones.
 - Reset: hardcoded 03:00, in the user's timezone. No setting. The day ends at 3am, not midnight, so night owls up past midnight don't lose their day.
-- Notification: hardcoded 19:30, in the user's timezone. No setting.
-- Notifications on/off toggle. Default on.
-- Notify only if I haven't pressed yet today: toggle, default on.
-- Garden opt-in: toggle, default off. Separate toggles for Personal Garden and any Group Gardens you have joined.
+- No notifications in v1. No notification settings.
+- Garden opt-in: toggle, default off. (Parked for v1 — the Garden tab is blurred with a “we’re still working on this!” card.)
 - Language: English for MVP.
-- Data: “Your notes live in Telegram CloudStorage on your device/account and in a temporary store until your recap is sent, then they are deleted. Your recaps stay in your Telegram chat.” + a “Clear today's data” button.
+- Data: “Your notes live in Telegram CloudStorage on your device/account and in a temporary store on the server. Your recaps stay in your Telegram chat.” + a “Clear today's data” button.
 
 ### 3.3 Sharing — outside Telegram, as a message or an art page
 Sharing is opt-in per note, not per day. Default is private.
@@ -76,6 +75,7 @@ Sharing is opt-in per note, not per day. Default is private.
 - This is a v3 feature, behind the `shareOutsideTelegram` flag in `lib/features.js`, default on for new installs, and migrated safely: see UPGRADES.md and `lib/migrations.js` (v2 → v3 adds `shareable: false` to old notes).
 
 ### 3.4 Garden (community, anonymous, opt-in)
+**Parked for v1 (2026-11-17).** The Garden tab stays in the app, but its content is blurred out behind a “we’re still working on this!” card. The `/garden` command is removed and the garden aggregation is dormant. The design below is kept for when it comes back.
 - Personal Garden: if opted in, each of your thanks adds an anonymous flower / pixel plant to a shared garden. No names, no note text shown by default.
 - Group Garden: a garden just for one Telegram group.
   - How to create: add @GiveThanksBot to a group, send `/garden` in the group, or tap the bot's “Create group garden” link. The bot posts a message in the group with a “Join this garden” button (deep link `t.me/GiveThanksBot?startgroup=garden_<group_id>` / `start=garden_<group_id>`).
@@ -90,25 +90,17 @@ Sections:
 1. What this is — a tiny daily habit, not a cure.
 2. What research says — short, plain-language summaries of gratitude journaling studies: e.g. people who regularly note things they are grateful for tend to report higher wellbeing in studies, with links to sources. No overclaiming, no numbers presented as guarantees.
 3. How Give Thanks works — press, note, recap, reset. Why a daily reset helps: fresh start, no backlog guilt.
-4. Why low cortisol by design — no streaks, no social comparison, one gentle nudge max.
+4. Why low cortisol by design — no streaks, no social comparison, no notifications.
 5. Not medical advice — if you are struggling, consider talking to a clinician / trusted person, with a link to local support resources (to be added per region).
 6. Privacy in one paragraph — see §6.
 
 Content is editable in `public/content/about.md` — dab has full autonomy to write whatever, as much text as they like, no code changes needed.
 
 ## 4. Notifications
-- Max 1 notification per day per user, plus the daily recap.
-- Notification copy, gentle, rotating, never shaming:
-  - “Anything you're thankful for today?”
-  - “A quiet moment to notice one good thing?”
-  - “What made today a little lighter?”
-- Never: “You haven't pressed yet!”, “Don't break your streak!”, “You're behind!”
-- Sent via the bot at 19:30, in their timezone.
-- If notifications are off, or the user already pressed today and “only if I haven't pressed” is on, skip it.
-- If the user blocks the bot, the scheduler marks them as blocked and stops trying until they /start again.
+None in v1. The 19:30 nudge was removed 2026-11-17 along with the scheduled recap — the server could not be trusted to be awake and to have the day’s list at the right minute, so v1 sends nothing on a schedule. If notifications come back, they must be gentle, rotating, never shaming (“Anything you're thankful for today?”, never “You haven't pressed yet!” / “Don't break your streak!”), max 1 per day, and skipped if the user already pressed.
 
 ## 5. Recap (the archive)
-At 03:00, the bot sends in the 1:1 chat:
+On demand, from the app. Tap “Send today’s recap to chat” in the Counter tab and the bot sends this in the 1:1 chat:
 
 ```
 🌱 Give Thanks — [Date, e.g. Mon 17 Nov 2026]
@@ -124,18 +116,19 @@ A fresh day starts now. No backlog, no guilt.
 
 - If 0 presses: “No thanks logged today. That's okay — fresh start tomorrow.”
 - Notes are listed in press order, with local time.
-- After sending, today's data is deleted from the temporary store and from CloudStorage (new date key starts).
+- Sending the recap does NOT reset the day — the counter resets at 03:00 on next open. You can send the recap as many times as you like.
 - The recap message is the archive. Users find old days via Telegram search in that chat.
+- The recap is built from the app’s own list (CloudStorage), via POST `/api/recap` — not from the server’s ephemeral copy, which a restart can wipe. Owner-only `/recap` in chat reads the server’s copy instead (same text, no reset); it can say 0 after a restart until the app re-syncs on open.
 
 ## 6. Data & privacy
 ### 6.1 What is stored, where, for how long
 | Data | Where | How long |
 |---|---|---|
-| Today's count + notes | Telegram CloudStorage (per user, per bot, synced by Telegram, free) + temporary scheduler store (see below) | Until reset, then deleted |
-| Settings: timezone, toggles, garden opt-ins | Temporary scheduler store, mirrored in CloudStorage | Until user changes / deletes |
-| Chat ID / user ID | Scheduler store, to send messages | Until user blocks / /stop |
+| Today's count + notes | Telegram CloudStorage (per user, per bot, synced by Telegram, free) + temporary server store (see below) | Until the 03:00 reset, then a new day starts |
+| Settings: timezone, toggles, garden opt-ins | Temporary server store, mirrored in CloudStorage | Until user changes / deletes |
+| Chat ID / user ID | Server store, to send the recap | Until user blocks the bot |
 | Recaps | Telegram chat history only | As long as Telegram keeps the chat |
-| Garden counts | Ephemeral aggregate per garden per day, no names | Until daily garden summary, then reset to count only |
+| Garden counts | Ephemeral aggregate per garden per day, no names (dormant in v1) | Until daily garden summary, then reset to count only |
 
 No long-term history database. No passwords. No email.
 
@@ -146,16 +139,12 @@ No long-term history database. No passwords. No email.
 - Implementation: one key for `today_meta` (date, count), chunked keys `today_notes_1`, `today_notes_2`, … each ≤4096 chars, ~50 short notes per chunk. Settings in `settings` key.
 - CloudStorage is client-only: only the Mini App JS can read/write it. The bot server cannot read it via the Bot API.
 
-### 6.3 Why a scheduler + temporary store is needed
-CloudStorage alone cannot wake up and send a message while the app is closed. The scheduler needs:
-1. To know *when* to act (chat_id + timezone + hours).
-2. To know *what* to send in the recap (today's notes).
-
-So on each press, the Mini App:
-- saves to CloudStorage (source of truth on device), AND
-- POSTs a lightweight sync to the scheduler API (`/api/sync`) with validated Telegram `initData`.
-
-The scheduler store is ephemeral: in the MVP code it is an in-memory map + a `data.json` for settings only, with today's notes held in memory and deleted after recap. In production, use a KV with TTL 36 hours (e.g. Cloudflare KV, Upstash Redis). Never store past days.
+### 6.3 Why a temporary server store is needed
+CloudStorage is client-only: only the Mini App JS can read/write it. The bot server cannot read it via the Bot API. So the app also syncs a copy to the server:
+- On each press, the Mini App saves to CloudStorage (source of truth on device), AND POSTs a lightweight sync to `/api/sync` with validated Telegram `initData`.
+- The server copy exists for owner-only `/recap` in chat. The on-demand recap button does not need it — it POSTs the app’s own list to `/api/recap` and the server just delivers it.
+- The server store is ephemeral: in the MVP code it is an in-memory map + a `data.json` for settings only, with today's notes held in memory and overwritten by the next sync (a restart wipes it; the app re-syncs on open). In production, use a KV with TTL 36 hours (e.g. Cloudflare KV, Upstash Redis). Never store past days.
+- v1 has no scheduler (removed 2026-11-17): nothing on the server fires on a clock. The 03:00 reset is app-side (the day key changes), and a wake-up ping at 02:55 keeps the server awake around the reset so the app’s first sync of the new day is fast.
 
 ### 6.4 Group garden data
 - Garden ID = Telegram group `chat_id`.
@@ -172,22 +161,17 @@ The scheduler store is ephemeral: in the MVP code it is an in-memory map + a `da
 - Low cortisol visual rules: no red alerts, no badge counts, no pulsing “urgent” animation, plenty of whitespace.
 
 ## 8. Bot commands
-- `/start` — welcome, open Mini App button, explain the loop in 3 lines.
-- `/open` — open the counter.
-- `/settings` — open Settings tab in the Mini App.
-- `/garden` — in a group: create / join that group's garden. In 1:1: explain gardens.
-- `/about` — open About / Bulletin Board. `/science` still works as an alias.
-- `/today` — show today's count in chat (no Mini App needed).
-- `/stop` — pause notifications + recaps, keep settings. `/start` resumes.
+- `/start` — welcome, open Mini App button, explain the loop in 3 lines. The only command in the menu.
+- `/recap` — owner-only, hidden from the menu. Full instant recap from the server’s copy, now, no reset. In a group it DMs the recap to the owner (never posts it in the group).
+- `/edit_about` — owner-only, hidden from the menu. Edit the Bulletin Board text from a 1:1 chat. `/cancel` aborts it.
 
-Bot also handles: `web_app_data` from the Mini App (for lazy recap fallback), and deep links `start=garden_<id>` and `startgroup=garden_<id>`.
+The bot does not handle `web_app_data` in v1 (the recap button uses POST `/api/recap` instead).
 
 ## 9. Scheduler
-- Runs every 5 minutes (MVP: every 1 minute in code, cheap at small scale).
-- For each user, compute local time from stored timezone + UTC now.
-- If local time == 19:30 and not yet notified today and conditions met → send notification, mark notified.
-- If local time == 03:00 and not yet recapped today → send recap, clear today, mark recapped, reset notified flag.
-- Idempotency: store `last_notify_date` and `last_recap_date` per user, so a restart / double tick never double-sends.
+None in v1. The 19:30 nudge and 03:00 recap were removed 2026-11-17: the server could not be trusted to be awake and to hold the day’s list at the right minute, so the recap is on demand from the app instead.
+- The 03:00 reset is app-side: the day key changes at 03:00 in the user’s timezone, and the counter resets on next open (or on press / return via `rolloverIfNeeded`).
+- A wake-up ping at 02:55 (a scheduled job outside this codebase) keeps the server awake around the 03:00 reset, so the app’s first sync of the new day and any recap send are fast.
+- If a scheduler comes back, it must be idempotent per user per day (`last_notify_date` / `last_recap_date`), and the recap must be built from a store the server can trust — see §6.3.
 - Timezone / DST: use IANA zone + `Intl` / `luxon`-style handling in production. In MVP code, use `Intl.DateTimeFormat` with `timeZone`.
 - Scale note: this design works to thousands of users on a free Cloudflare Worker / single Node process. Beyond that, shard by hour.
 
@@ -195,8 +179,8 @@ Bot also handles: `web_app_data` from the Mini App (for lazy recap fallback), an
 - User presses after midnight but before 03:00 (e.g. 01:00): still counts for *yesterday's* day, because the “day” ends at 03:00, not midnight.
 - Times are fixed, so there is no mid-day reset change to handle.
 - User changes timezone while travelling: next reset uses new zone, today is not retroactively split.
-- User opens app after 03:00 but before scheduler ran: app detects date mismatch vs CloudStorage, shows fresh day, scheduler still sends recap from its temporary copy.
-- User blocks bot: Telegram returns 403, scheduler marks blocked, stops.
+- User opens app after 03:00: app detects date mismatch vs CloudStorage, shows fresh day, and re-syncs on open.
+- User blocks bot: Telegram returns 403 when the recap button tries to send; the app says so and asks them to /start again.
 - Note longer than limit: cap at 140 characters per note, truncate with ellipsis.
 - More than ~50 notes: chunk CloudStorage keys, recap message capped at Telegram's 4096-char message limit — if longer, split into 2 messages.
 - Offline press: save to CloudStorage / localStorage first, sync when back online, show “saved on this device, syncing…”.
@@ -205,12 +189,11 @@ Bot also handles: `web_app_data` from the Mini App (for lazy recap fallback), an
 - [ ] Bot created in BotFather, Mini App URL set, token in `.env`, bot responds to /start.
 - [ ] Shortcut opens straight to Counter, press works, count persists across reloads via CloudStorage.
 - [ ] Note attaches to a press, shows in today's list, appears in recap.
-- [ ] Settings save timezone, scheduler fires at 03:00 / 19:30 local time.
-- [ ] Recap arrives in 1:1 chat at 03:00, then count resets to 0.
-- [ ] Notification arrives once, only if no press yet, at 19:30.
-- [ ] Garden: can create a group garden, join opt-in, see anonymous flowers.
-- [ ] About / Bulletin Board readable, editable in public/content/about.md.
-- [ ] No long-term DB: after recap, today's notes are gone from the server store.
+- [ ] Counter resets at 03:00 local time on next open; night-owl presses before 03:00 still count for that day.
+- [ ] “Send today’s recap to chat” sends the full list to the 1:1 chat, any time, and does not reset the day.
+- [ ] Garden tab shows the blurred “we’re still working on this!” card.
+- [ ] About / Bulletin Board readable, editable in public/content/about.md and via /edit_about.
+- [ ] No long-term DB: no past days stored on the server; recaps live in the Telegram chat only.
 
 ## 12. Out of scope for MVP
 - iOS/Android native home-screen widget (shortcut is enough).
@@ -227,9 +210,9 @@ This is a hard requirement, not a nice-to-have. A v1.0 user must open v2.0 and s
 2. **Version every piece of data.** Every stored record carries a `version` number. Code never assumes the current version. See `lib/migrations.js` and `public/app.js` (`DATA_VERSION`).
 3. **Migrate on read, never on deploy.** When old data is loaded, it is migrated in memory to the current shape, then saved back in the new shape. No bulk migration job, no downtime, no “run this script first”.
 4. **Never delete unknown fields.** If v1.0 code sees a v2.0 field it doesn't understand, it keeps it and passes it through. If v2.0 code sees a v1.0 record, it fills in defaults for new fields and keeps the old ones.
-5. **Additive only for v1.x, with one exception.** New fields are optional with defaults. Renames are done by adding the new name *and* keeping the old one for one full version, then deprecating. Never rename a CloudStorage key in place — add a new key and migrate. Exception (v4, 2026-11-17, explicit user decision): `resetHour` / `notifyHour` were removed because times are now hardcoded 03:00 / 19:30. No other fields are ever removed.
+5. **Additive only for v1.x, with one exception.** New fields are optional with defaults. Renames are done by adding the new name *and* keeping the old one for one full version, then deprecating. Never rename a CloudStorage key in place — add a new key and migrate. Exception (v4, 2026-11-17, explicit user decision): `resetHour` / `notifyHour` were removed because times are now hardcoded 03:00 / 19:30. Exception (v1 wrap-up, 2026-11-17, explicit user decision): the scheduled nudge and recap were removed; `lastRecap` / `lastNotifyDate` / `lastRecapDate` are dormant in the record and may be dropped in a future version. No other fields are ever removed.
 6. **Feature flags, not forks.** New features ship behind a flag in settings (`features: { gardenWeeklyShare: false }`). Turn it on per user / per group, roll it back without a redeploy of the core. A flag off must be identical to v1.0 behaviour.
-7. **Modular code layout.** One feature = one module. Core (counter, settings, scheduler, recap) never imports a feature module directly; features register themselves. See §13.3.
+7. **Modular code layout.** One feature = one module. Core (counter, recap, reset) never imports a feature module directly; features register themselves. See §13.3.
 8. **Backwards-compatible API.** `/api/sync` and `/api/state` accept v1 and v2 payloads. Unknown fields are ignored, missing fields get defaults. API version is in the payload (`apiVersion: 1`), not just the URL.
 9. **Safe fallback.** If the Mini App JS fails to parse new data, it falls back to the last known good today from CloudStorage and shows a calm “Couldn't load the new bits, your thanks are safe” — never a blank screen, never a zeroed count.
 10. **Test the upgrade path every release.** Test matrix: v1.0 data → v2.0 code, v2.0 data → v1.0 code (must not crash, must preserve unknown fields), and offline v1.0 press → sync after upgrade.
@@ -238,7 +221,7 @@ This is a hard requirement, not a nice-to-have. A v1.0 user must open v2.0 and s
 - Client: `gt_settings` now stores `{ version: 4, timezone, ... }` — v4 dropped `resetHour` / `notifyHour`. `gt_today_meta` stores `{ version: 4, date, count }`. Old v1 records with no `version` are treated as version 1.
 - Server: `data.json` records store `{ version: 4, ... }`. `lib/migrations.js:migrateUser()` upgrades v1 → v4, dropping the two hour fields on the v3 → v4 step.
 - CloudStorage keys are namespaced and never reused for a different shape: `gt_today_notes_1` stays notes. A new feature gets a new key, e.g. `gt_garden_weekly_1`, never overwrites an old one.
-- Today's notes are still ephemeral (deleted after recap), but *settings* and *garden membership* are durable and must survive upgrades.
+- Today's notes are still ephemeral (a new day starts at 03:00), but *settings* and *garden membership* are durable and must survive upgrades.
 
 ### 13.3 Modular layout (from v1.1)
 ```

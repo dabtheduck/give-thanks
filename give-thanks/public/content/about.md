@@ -18,15 +18,16 @@ Write your own version here. Replace this whole file with your words, your stori
 
 - Press to count.
 - Tag a note if you like.
-- Get a recap at 3am your time.
+- Your day runs until 3am — then the counter resets. Night owls can look back over the list before bed.
+- Tap “Send today’s recap to chat” any time to save the list in your chat.
 - Start fresh the next day. No backlog, no guilt.
 
 ## Why low cortisol by design
 
 - No streak numbers.
 - No leaderboards, no likes.
-- One gentle notification a day at most, and only if you have not pressed yet.
-- The garden is anonymous and opt-in.
+- No notifications, no nagging.
+- The garden is on its way — we're still working on it.
 
 ## A note
 

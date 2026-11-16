@@ -1,16 +1,18 @@
 // Give Thanks — server.js
-// Express (serves Mini App) + Telegraf bot + scheduler. MVP, single file.
-// Privacy: today's notes live in memory only until the recap is sent, then deleted.
-// Settings (timezone / toggles) persist in data.json. History lives in Telegram chat.
-// Schedule is hardcoded (v4): recap 03:00, notification 19:30, both in the user's timezone.
-// No hour settings. Timezone is still per-user, auto-detected from the device.
+// Express (serves Mini App) + Telegraf bot. MVP, single file.
+// v1: NO scheduler — no 19:30 nudge, no 03:00 recap message. The day still
+// ends at 03:00 (the counter resets then; night owls can review the list
+// before bed). The recap is on demand: the app sends it to the 1:1 chat
+// via POST /api/recap, or the owner can run /recap.
+// Privacy: today's notes live in memory only; the archive is the Telegram
+// chat (via the recap button). Settings persist in data.json.
+// Timezone is per-user, auto-detected from the device.
 // Upgrades: see UPGRADES.md — all data is versioned, migrated on read via lib/migrations.js,
 // new features are behind flags in lib/features.js. Never delete unknown fields.
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const express = require('express');
-const cron = require('node-cron');
 const { Telegraf, Markup } = require('telegraf');
 const { CURRENT_VERSION, migrateUser, FIXED_RESET_HOUR, FIXED_RESET_MINUTE, FIXED_NOTIFY_HOUR, FIXED_NOTIFY_MINUTE } = require('./lib/migrations');
 const { isEnabled } = require('./lib/features');
@@ -28,12 +30,15 @@ loadEnv();
 const BOT_TOKEN = process.env.BOT_TOKEN || '';
 const MINI_APP_URL = (process.env.MINI_APP_URL || 'http://localhost:3000').replace(/\/$/, '');
 const PORT = parseInt(process.env.PORT || '3000', 10);
-// Fixed schedule (v4): recap 03:00, notification 19:30, in each user's timezone.
+// v1: no scheduled messages. The day ends at 03:00 (the counter resets
+// then); the recap is on demand (app button / owner-only /recap).
+// No hour settings. Timezone is still per-user, auto-detected.
 if (!BOT_TOKEN) console.warn('[give-thanks] WARNING: BOT_TOKEN not set. Copy .env.example to .env first.');
 
 // ---- ephemeral store ----
-// users: Map<userId, { chatId, timezone, notificationsOn, notifyOnlyIfEmpty, gardenOptIn, groupGardens:Set, today:{date,count,notes[]}, lastRecap:{date,count,notes[]}|null, lastNotifyDate, lastRecapDate, blocked }>
-// Times are fixed: recap 03:00, notify 19:30, in u.timezone. No per-user hours.
+// users: Map<userId, { chatId, timezone, notificationsOn, notifyOnlyIfEmpty, gardenOptIn, groupGardens:Set, today:{date,count,notes[]}, lastRecap, lastNotifyDate, lastRecapDate, blocked }>
+// (lastRecap / lastNotifyDate / lastRecapDate are dormant leftovers from the
+// removed scheduler — kept in the record so old data still migrates cleanly.)
 const DATA_FILE = path.join(__dirname, 'data.json');
 const users = new Map();
 const gardens = new Map(); // groupId -> { title, members:Set, countToday, date }
@@ -155,51 +160,47 @@ function splitMessage(text, limit = 4000) {
   if (cur) out.push(cur);
   return out;
 }
-const NOTIFY_LINES = [
-  "Anything you're thankful for today?",
-  'A quiet moment to notice one good thing?',
-  'What made today a little lighter?',
-];
-
 // ---- bot ----
 const bot = new Telegraf(BOT_TOKEN);
 const openKeyboard = () => Markup.inlineKeyboard([[Markup.button.webApp('🌱 Open Give Thanks', MINI_APP_URL)]]);
+// ---- Owner-only commands ----
+// /recap and /edit_about are for the bot owner only, and hidden from the
+// menu (everyone else only sees /start). Admin: set ADMIN_USER_ID in
+// .env to your Telegram ID (from @userinfobot). If not set, the first
+// person to run an owner command in a 1:1 chat becomes admin.
+let adminId = process.env.ADMIN_USER_ID ? String(process.env.ADMIN_USER_ID) : null;
+function isAdmin(userId) {
+  if (adminId) return String(userId) === adminId;
+  return true; // no admin set yet — first editor becomes admin, see below
+}
 bot.start(async (ctx) => {
   const u = getUser(ctx.from.id, ctx.chat.id);
   u.blocked = false; saveSettings();
   await ctx.reply(
-    `Hey, welcome to Give Thanks 🌱\n\nPress the button, say thanks, add a little note if you like.\nAt 3am your time I'll send you a recap here, then we start fresh. I'll nudge you at 7:30pm if you haven't pressed yet.\n\nNo streaks. No pressure. Just one quiet habit.`,
+    `Hey, welcome to Give Thanks 🌱\n\nPress the button, say thanks, add a little note if you like.\n\nYour day runs until 3am, so night owls can add thanks and look back over the list before bed — the counter resets at 3am, and we start fresh.\n\nWhenever you want your list saved here, tap “Send today’s recap to chat” in the app — it works any time.\n\nNo streaks. No pressure. Just one quiet habit.`,
     openKeyboard()
   );
 });
-bot.command('open', (ctx) => ctx.reply('Here you go — straight to the counter:', openKeyboard()));
-bot.command('today', (ctx) => {
-  const u = getUser(ctx.from.id, ctx.chat.id);
-  ctx.reply(u.today.count ? `Today: ${u.today.count} thanks 🌱` : 'No thanks yet today. Fresh day, whenever you’re ready.');
-});
 bot.command('recap', async (ctx) => {
-  // Instant recap, on demand — same full list as the 03:00 scheduled recap
-  // (every note, no blurs; the share tick only affects sharing outside
-  // Telegram). It does NOT reset the day; the 03:00 recap still does that.
-  // It is a backup for when the scheduled recap fails or you just want
-  // the list now. Privacy, learned 2026-11-17: a personal recap must never
-  // be posted in a group. So in a group this DMs the full recap to whoever
-  // asked, and only leaves a short note in the group. In 1:1 it replies
-  // right there.
+  // Owner-only, hidden from the menu (like /edit_about). The owner keeps
+  // it as a quick check of what the server knows; everyone else gets a
+  // polite no. If no admin is set yet, the first person to run it in a
+  // 1:1 chat becomes admin — same claim rule as /edit_about.
+  // NOTE: this reads the server's today, which is ephemeral (a restart
+  // wipes it until the app re-syncs on open). The reliable recap is the
+  // app's "Send today's recap to chat" button (POST /api/recap), which
+  // sends the list the app itself holds.
+  if (ctx.chat.type === 'private' && !adminId) { adminId = String(ctx.from.id); console.log(`[give-thanks] Recap admin set to ${adminId}`); }
+  if (adminId && String(ctx.from.id) !== adminId) return ctx.reply('That one’s just for the bot owner 🌱');
   const u = getUser(ctx.from.id, ctx.chat.id);
-  let text = formatRecap(u, localDateStr(new Date(), u.timezone));
-  // If today is still empty, show the last recap too — that is the whole
-  // point of this command: a backup for a missed or wrong-place recap.
-  // (Without this, /recap after a 03:00 reset says "no thanks" even though
-  // yesterday's list existed hours earlier.)
-  const lr = u.lastRecap;
-  if ((!u.today.count && !(u.today.notes || []).length) && lr && lr.count) {
-    text += `\n\n—\n\nNothing yet today, so here’s the last recap (${lr.date}):\n\n` + formatRecap({ today: lr, features: u.features }, lr.date);
-  }
+  const text = formatRecap(u, localDateStr(new Date(), u.timezone));
   if (ctx.chat.type === 'private') {
     for (const part of splitMessage(text)) await ctx.reply(part);
     return;
   }
+  // Privacy, learned 2026-11-17: a personal recap must never be posted
+  // in a group. So in a group this DMs the full recap to whoever asked,
+  // and only leaves a short note in the group.
   try {
     for (const part of splitMessage(text)) await bot.telegram.sendMessage(ctx.from.id, part);
     await ctx.reply('Sent your full recap to your 1:1 chat 🌱 — your notes stay private.');
@@ -208,18 +209,6 @@ bot.command('recap', async (ctx) => {
     await ctx.reply('I couldn’t send it privately — tap /start in a 1:1 chat with me first, then try /recap again.');
   }
 });
-bot.command('settings', (ctx) => ctx.reply('There are no settings to fiddle with — recap is 3am, nudge is 7:30pm, in your timezone. Open the app:', openKeyboard()));
-bot.command('about', async (ctx) => {
-  // Show the current Bulletin Board text in chat, plus a button to open it.
-  const text = getAboutText();
-  for (const part of splitMessage(`📋 Bulletin Board\n\n${text}`)) await ctx.reply(part);
-  await ctx.reply('Open it in the Mini App:', openKeyboard());
-});
-bot.command('science', async (ctx) => {
-  const text = getAboutText();
-  for (const part of splitMessage(`📋 Bulletin Board\n\n${text}`)) await ctx.reply(part);
-  await ctx.reply('Open it in the Mini App:', openKeyboard());
-}); // alias, kept so old links still work
 
 // ---- Edit About on the fly in Telegram ----
 // About text lives in public/content/about.md. /edit_about lets the owner replace it from Telegram.
@@ -227,17 +216,12 @@ bot.command('science', async (ctx) => {
 // If not set, the first person to run /edit_about in a 1:1 chat becomes admin for this install.
 const ABOUT_FILE = path.join(__dirname, 'public', 'content', 'about.md');
 const awaitingAbout = new Map(); // userId -> true
-let adminId = process.env.ADMIN_USER_ID ? String(process.env.ADMIN_USER_ID) : null;
 function getAboutText() {
   try { return fs.readFileSync(ABOUT_FILE, 'utf8'); } catch { return '# Bulletin Board\n\nWrite whatever you like here.'; }
 }
 function setAboutText(text) {
   fs.mkdirSync(path.dirname(ABOUT_FILE), { recursive: true });
   fs.writeFileSync(ABOUT_FILE, text);
-}
-function isAdmin(userId) {
-  if (adminId) return String(userId) === adminId;
-  return true; // no admin set yet — first editor becomes admin, see below
 }
 bot.command('edit_about', async (ctx) => {
   if (ctx.chat.type !== 'private') return ctx.reply('Please send /edit_about in a 1:1 chat with me, not in a group.');
@@ -262,51 +246,6 @@ bot.on('text', async (ctx, next) => {
   setAboutText(text);
   await ctx.reply(`Saved 🌱 About page updated.\n\nPreview:\n${text.slice(0, 400)}${text.length > 400 ? '…' : ''}\n\nOpen the Mini App → About to see it live.`);
 });
-bot.command('stop', (ctx) => {
-  const u = getUser(ctx.from.id, ctx.chat.id);
-  u.notificationsOn = false; saveSettings();
-  ctx.reply('Paused. No notifications or recaps for now. Send /start anytime to resume.');
-});
-bot.command('garden', async (ctx) => {
-  // In a group: create a garden for that group. In 1:1: explain.
-  // NOTE (2026-11-17): /today answered in groups but /garden stayed silent.
-  // Delivery, polling and send rights were all fine, so the failure was in
-  // this reply itself — the Join button (webApp + ?startapp=garden_<id>).
-  // Telegram rejects a bad button URL by failing the whole send, with no
-  // message at all. So: log the receipt, try the button, and if it fails
-  // fall back to the same join link as plain text (Telegram auto-links it,
-  // and the Mini App reads gardenId from ?startapp= in the URL either way).
-  // The exact Telegram error lands in Render logs via bot.catch.
-  console.log('[give-thanks] /garden from', ctx.chat.type, ctx.chat.id, 'by', ctx.from.id);
-  if (ctx.chat.type === 'group' || ctx.chat.type === 'supergroup') {
-    const gid = String(ctx.chat.id);
-    if (!gardens.has(gid)) gardens.set(gid, { title: ctx.chat.title || 'Group garden', members: new Set(), countToday: 0, date: localDateStr(new Date(), 'Asia/Singapore') });
-    const joinUrl = `${MINI_APP_URL}?startapp=garden_${gid}`;
-    try {
-      await ctx.reply(
-        `🌸 This group now has a Give Thanks garden.\n\nTap below to join (opt-in, anonymous). Each thanks you log adds a flower here — no names, no note text shared.`,
-        Markup.inlineKeyboard([[Markup.button.webApp('🌸 Join this garden', joinUrl)]])
-      );
-    } catch (e) {
-      console.error('[give-thanks] /garden button reply failed:', e.message, '— sending plain link instead');
-      await ctx.reply(
-        `🌸 This group now has a Give Thanks garden.\n\nTap to join (opt-in, anonymous). Each thanks you log adds a flower here — no names, no note text shared.\n\n${joinUrl}`
-      );
-    }
-  } else {
-    await ctx.reply('Add me to a Telegram group and send /garden there to create a garden just for that group. Or open the app to see your personal garden:', openKeyboard());
-  }
-});
-bot.on('web_app_data', async (ctx) => {
-  // Fallback: Mini App sent data directly (e.g. manual recap request)
-  try {
-    const data = JSON.parse(ctx.webAppData?.data?.text || ctx.message?.web_app_data?.data || '{}');
-    if (data.type === 'recap_now') {
-      const u = getUser(ctx.from.id, ctx.chat.id);
-      for (const part of splitMessage(formatRecap(u, localDateStr(new Date(), u.timezone)))) await ctx.reply(part);
-    }
-  } catch (e) { console.error('web_app_data', e.message); }
-});
 bot.catch((err) => console.error('bot error', err.message));
 
 // ---- express ----
@@ -314,7 +253,7 @@ const app = express();
 app.use(express.json({ limit: '200kb' }));
 // No-store for app assets: the live counter once stayed broken because browsers /
 // Telegram WebView kept serving a cached pre-fix app.js after a redeploy.
-// (index.html also loads app.js/style.css/themes.js with ?v=20261117i.)
+// (index.html also loads app.js/style.css/themes.js with ?v=20261117j.)
 app.use(express.static(path.join(__dirname, 'public'), {
   maxAge: 0, etag: false,
   setHeaders(res, filePath) { if (/\.(js|css|html)$/.test(filePath)) res.set('Cache-Control', 'no-store'); },
@@ -337,7 +276,8 @@ app.post('/api/sync', (req, res) => {
   if (req.body.settings) {
     const s = req.body.settings;
     if (s.timezone) u.timezone = s.timezone;
-    // v4: hour settings are ignored — times are hardcoded 03:00 / 19:30 in u.timezone.
+    // v1: no scheduled messages. The day ends at 03:00 (the app's
+    // todayKey); hour settings are ignored.
     if (typeof s.notificationsOn === 'boolean') u.notificationsOn = s.notificationsOn;
     if (typeof s.notifyOnlyIfEmpty === 'boolean') u.notifyOnlyIfEmpty = s.notifyOnlyIfEmpty;
     if (typeof s.gardenOptIn === 'boolean') u.gardenOptIn = s.gardenOptIn;
@@ -366,6 +306,36 @@ app.post('/api/sync', (req, res) => {
     } // end else (non-stale today)
   }
   res.json({ ok: true, count: u.today.count });
+});
+
+// Send today's recap to the 1:1 bot chat, on demand from the Mini App.
+// The app is the source of truth (its list lives in CloudStorage), so the
+// recap is built from the payload, not from the server's ephemeral today
+// (2026-11-17: the server often had 0 even though the app had 3 — a
+// restart wipes the server's today, and the app only re-syncs on open).
+// Works at any time of day; it does NOT reset the day (03:00 still does).
+// Delivery is an outbound API call, so it works even when bot polling is
+// down (e.g. after a deploy clash) — only the web server needs to be up.
+app.post('/api/recap', async (req, res) => {
+  const user = validateInitData(req.body.initData || '');
+  let userId = user?.id;
+  if (!userId) {
+    if (MINI_APP_URL.includes('localhost')) userId = req.body.userId || 'preview-user';
+    else return res.status(401).json({ ok: false, error: 'invalid initData' });
+  }
+  const t = req.body.today || {};
+  const count = Number(t.count || 0);
+  const notes = Array.isArray(t.notes) ? t.notes.slice(0, 200).map(n => ({ text: String(n.text || '').slice(0, 140), time: String(n.time || '') })) : [];
+  const date = String(t.date || localDateStr(new Date(), 'Asia/Singapore'));
+  if (!count && !notes.length) return res.json({ ok: false, error: 'nothing to send yet' });
+  const text = formatRecap({ today: { count, notes }, features: {} }, date);
+  try {
+    for (const part of splitMessage(text)) await bot.telegram.sendMessage(userId, part);
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('api/recap send failed', e.message);
+    res.status(502).json({ ok: false, error: 'could not send to your chat — open the bot chat and send /start first, then try again' });
+  }
 });
 
 app.get('/api/state', (req, res) => {
@@ -399,69 +369,31 @@ app.get('/api/garden', (req, res) => {
   return res.json({ ok: true, gardenId: gid, countToday: g.countToday, flowers: Math.min(g.countToday, 200) });
 });
 
-// ---- scheduler: every minute ----
-async function tick() {
-  const now = new Date();
-  for (const [id, u] of users) {
-    if (u.blocked) continue;
-    // Belt and braces: the send target is always the private 1:1 chat
-    // (user id). Never a group — see getUser, 2026-11-17 recap bug.
-    if (u.chatId !== id) u.chatId = id;
-    let parts;
-    try { parts = localParts(now, u.timezone); } catch { parts = localParts(now, 'Asia/Singapore'); }
-    // Fixed times (v4), in the user's timezone: notify 19:30, recap/reset 03:00.
-    // Only act in those two minutes, once per day (guarded by lastNotifyDate / lastRecapDate).
-    const isNotifyMinute = parts.hour === FIXED_NOTIFY_HOUR && parts.minute === FIXED_NOTIFY_MINUTE;
-    const isResetMinute = parts.hour === FIXED_RESET_HOUR && parts.minute === FIXED_RESET_MINUTE;
-    if (!isNotifyMinute && !isResetMinute) continue;
-    // Notification
-    if (isNotifyMinute && u.notificationsOn && u.lastNotifyDate !== parts.date) {
-      const shouldSend = !u.notifyOnlyIfEmpty || u.today.count === 0;
-      u.lastNotifyDate = parts.date; saveSettings();
-      if (shouldSend) {
-        try { await bot.telegram.sendMessage(u.chatId, NOTIFY_LINES[Math.floor(Math.random() * NOTIFY_LINES.length)] + '\n\nTap to open the counter 🌱', openKeyboard()); }
-        catch (e) { if (e.response?.error_code === 403) { u.blocked = true; saveSettings(); } }
-      }
-    }
-    // Reset + recap
-    if (isResetMinute && u.lastRecapDate !== parts.date) {
-      u.lastRecapDate = parts.date;
-      const text = formatRecap(u, parts.date);
-      try { for (const part of splitMessage(text)) await bot.telegram.sendMessage(u.chatId, part); }
-      catch (e) { if (e.response?.error_code === 403) u.blocked = true; }
-      // Keep yesterday's list for /recap (2026-11-17: /recap at 03:19 said
-      // "no thanks" because this reset had already wiped the list — the
-      // scheduled recap had gone to the wrong chat, so the backup showed
-      // nothing). Replaced by the next day's recap; persisted in data.json
-      // like the rest of the user record (today itself stays ephemeral).
-      u.lastRecap = { date: u.today.date, count: u.today.count, notes: u.today.notes.map(n => ({ ...n })) };
-      // Delete today's ephemeral copy. CloudStorage is cleared by the Mini App on next open (new date key).
-      u.today = { version: CURRENT_VERSION, date: parts.date, count: 0, notes: [] };
-      u.lastNotifyDate = '';
-      saveSettings();
-    }
-  }
-}
-cron.schedule('* * * * *', () => { tick().catch(e => console.error('tick', e.message)); });
-
 // ---- Telegram command menu (what users see when they type /) ----
 // Set on every start so it stays in sync with the code — no BotFather
-// step needed. Owner-only /edit_about and /cancel are deliberately NOT
-// listed: everyone would see them, and only the owner can use them.
+// step needed. v1: only /start is listed. /recap and /edit_about are
+// owner-only and deliberately NOT listed: everyone would see them, and
+// only the owner can use them.
 const BOT_COMMANDS = [
   { command: 'start', description: 'Open Give Thanks and start the habit' },
-  { command: 'open', description: 'Open the counter' },
-  { command: 'today', description: 'See today’s thanks so far' },
-  { command: 'recap', description: 'Get today’s full recap now' },
-  { command: 'garden', description: 'Create a garden for this group' },
-  { command: 'about', description: 'Read the Bulletin Board' },
-  { command: 'settings', description: 'Recap 3am, nudge 7:30pm — in your timezone' },
-  { command: 'stop', description: 'Pause recaps and nudges' },
 ];
 
 // ---- start ----
 app.listen(PORT, () => console.log(`[give-thanks] Mini App at http://localhost:${PORT} — set MINI_APP_URL to your public URL for Telegram`));
 if (BOT_TOKEN) bot.telegram.setMyCommands(BOT_COMMANDS).then(() => console.log('[give-thanks] command menu set')).catch(e => console.error('setMyCommands', e.message));
-if (BOT_TOKEN) bot.launch().then(() => console.log('[give-thanks] bot polling started')).catch(e => console.error('bot launch', e.message));
+// Launch with retries: during a Render deploy the old instance may still
+// be polling when the new one starts, Telegram answers 409, and the new
+// instance gives up — the website works but the bot goes deaf (2026-11-17).
+// Retrying lets the new instance take over once the old one has shut down.
+async function launchBot(attempt = 1) {
+  try {
+    await bot.launch();
+    console.log('[give-thanks] bot polling started');
+  } catch (e) {
+    console.error(`[give-thanks] bot launch failed (attempt ${attempt}):`, e.message);
+    if (attempt < 6) setTimeout(() => launchBot(attempt + 1), 10000);
+  }
+}
+if (BOT_TOKEN) launchBot();
 process.once('SIGINT', () => { try { if (BOT_TOKEN) bot.stop('SIGINT'); } catch (e) {} process.exit(0); });
 process.once('SIGTERM', () => { try { if (BOT_TOKEN) bot.stop('SIGTERM'); } catch (e) {} process.exit(0); });

@@ -1,6 +1,8 @@
 // Give Thanks — Mini App (mockup-matched rebuild)
-// DATA_VERSION 4. Fixed schedule: recap/reset 03:00, notification 19:30, in your timezone.
-// CloudStorage first (chunked notes), then POST /api/sync for scheduler/recap.
+// DATA_VERSION 4. v1: no scheduled nudge/recap. The day ends at 03:00
+// (the counter resets then); the recap is on demand via the app's
+// "Send today's recap to chat" button (POST /api/recap) or owner-only /recap.
+// CloudStorage first (chunked notes), then POST /api/sync for the server copy.
 //
 // COUNTER BUG — why it stayed at 0 even after the todayKey fix:
 //   press() incremented state, then awaited saveToday(), which awaited csSet().
@@ -136,7 +138,7 @@ function csSet(key, val) {
 // ---- About / Bulletin Board ----
 const ABOUT_FALLBACK = [
   { t: 'What this is', b: 'A tiny daily habit. Press, notice one good thing, move on.' },
-  { t: 'How it works', b: 'Press to count, tag a note if you like, get a recap at 3am your time, start fresh.' },
+  { t: 'How it works', b: 'Press to count, tag a note if you like. Your day runs until 3am — then the counter resets. Tap “Send today’s recap to chat” any time to save the list in your chat.' },
 ];
 function renderMarkdown(md) {
   const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -320,6 +322,46 @@ async function loadSettings() {
 async function saveSettings() {
   try { await csSet('gt_settings', JSON.stringify(state.settings)); } catch (e) {}
   syncToServer();
+}
+
+// ---- Send today's recap to the 1:1 bot chat, on demand, at any time ----
+// The app is the source of truth (its list lives in CloudStorage), so the
+// recap is built here and posted to /api/recap — the server just delivers
+// it. It does NOT reset the day; 03:00 still does that.
+let recapSending = false;
+async function sendRecapToChat() {
+  const status = el('recapStatus');
+  const btn = el('sendRecapBtn');
+  const setStatus = (t) => { if (status) status.textContent = t; };
+  if (recapSending) return;
+  if (!tg || !tg.initData) { setStatus('Open this in Telegram to send the recap to your chat.'); return; }
+  if (!state.today.count && !state.today.notes.length) { setStatus('Nothing to send yet — press + thanks first.'); return; }
+  recapSending = true;
+  if (btn) btn.disabled = true;
+  setStatus('Sending…');
+  try {
+    const ctrl = new AbortController();
+    // 90s, like sync: sending wakes a sleeping Render (~60s) and the
+    // message still goes out — delivery is an outbound API call, so it
+    // works even when bot polling is down after a deploy.
+    setTimeout(() => { try { ctrl.abort(); } catch (e) {} }, 90000);
+    const res = await fetch('/api/recap', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: ctrl.signal,
+      body: JSON.stringify({ initData: tg.initData, today: state.today }),
+    });
+    if (res.ok) {
+      setStatus('Sent to your chat 🌱');
+    } else {
+      let msg = 'Couldn’t send — try again in a bit.';
+      try { const j = await res.json(); if (j && j.error) msg = j.error; } catch (e) {}
+      setStatus(msg);
+    }
+  } catch (e) {
+    setStatus('Couldn’t reach the server — try again in a bit.');
+  } finally {
+    recapSending = false;
+    if (btn) btn.disabled = false;
+  }
 }
 
 // ---- sync to server (background only, 5s timeout, never blocks UI) ----
@@ -547,6 +589,8 @@ function attachListeners() {
   document.querySelectorAll('.tabs button').forEach(b => b.addEventListener('click', () => switchTab(b.dataset.tab)));
   const goShare = el('goShareBtn');
   if (goShare) goShare.addEventListener('click', () => { switchTab('share'); renderSharePreview(); });
+  const recapBtn = el('sendRecapBtn');
+  if (recapBtn) recapBtn.addEventListener('click', sendRecapToChat);
   const shareMsg = el('shareMessageBtn'); if (shareMsg) shareMsg.addEventListener('click', shareAsMessage);
   const shareArt = el('shareArtBtn'); if (shareArt) shareArt.addEventListener('click', shareAsArt);
   const copyShare = el('copyShareBtn');
