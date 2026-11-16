@@ -276,6 +276,36 @@ function syncToServer() {
 
 // ---- UI ----
 const PLANTS = ['🌱', '🌿', '🌷', '🌻', '🌳'];
+// ---- loading cover: plant grows while the app starts, fades once loaded ----
+// Shown from first paint (it is plain HTML). Hidden when init finishes,
+// with a 4s safety net so a hung load can never trap the user on it.
+const bootStartedAt = Date.now();
+let loadingTimer = null;
+let loadingHidden = false;
+function hideLoading() {
+  if (loadingHidden) return;
+  loadingHidden = true;
+  const cover = el('loadingCover');
+  if (!cover) { if (loadingTimer) { clearInterval(loadingTimer); loadingTimer = null; } return; }
+  // Let it show at least briefly, so it never just flickers. The plant
+  // keeps growing until the cover is actually gone, not just until init
+  // finishes (fast loads would otherwise freeze it on 🌱).
+  const wait = Math.max(0, 700 - (Date.now() - bootStartedAt));
+  setTimeout(() => {
+    cover.classList.add('hidden');
+    setTimeout(() => {
+      if (loadingTimer) { clearInterval(loadingTimer); loadingTimer = null; }
+      if (cover.parentNode) cover.parentNode.removeChild(cover);
+    }, 600);
+  }, wait);
+}
+(function startLoadingPlant() {
+  const node = el('loadingPlant');
+  if (!node) return;
+  let li = 0;
+  loadingTimer = setInterval(() => { li = (li + 1) % PLANTS.length; node.textContent = PLANTS[li]; }, 450);
+})();
+setTimeout(hideLoading, 4000);
 const STAGES = ['JUST SPROUTED', 'GROWING', 'NICE PATCH', 'BLOOMING', 'FULL GARDEN'];
 function plantIndex(count) { return Math.min(Math.floor(count / 3), PLANTS.length - 1); }
 function escapeHtml(s) { return String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
@@ -460,4 +490,5 @@ render();
   try { await loadSettings(); } catch (e) {}
   try { state.today.date = todayKey(); await loadToday(); } catch (e) {}
   try { render(); } catch (e) {}
+  hideLoading();
 })();

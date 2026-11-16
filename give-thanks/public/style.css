@@ -35,6 +35,14 @@ h3{font-family:"Space Mono","Courier New",monospace;margin:0 0 8px;font-size:16p
 .small-btn.danger{background:#fff;color:var(--ink);border:1px solid var(--line);box-shadow:none;margin-top:10px}
 .undo-btn{display:block;margin:10px auto 0;background:none;border:none;color:var(--muted);font-family:"Nunito",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;font-weight:700;font-size:13px;padding:6px 10px;cursor:pointer;border-radius:10px}
 .undo-btn:hover{color:var(--ink);background:var(--sage-soft)}
+/* Loading cover: shown from first paint until the app has loaded your
+   thanks. Cream + forest, plant grows while it loads, then fades out. */
+.loading-cover{position:fixed;inset:0;background:var(--cream);z-index:50;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;transition:opacity .45s ease}
+.loading-cover.hidden{opacity:0;pointer-events:none}
+.loading-plant{font-size:72px;animation:bob 1.2s ease-in-out infinite}
+@keyframes bob{0%,100%{transform:translateY(0) scale(1)}50%{transform:translateY(-8px) scale(1.06)}}
+.loading-title{font-family:"Space Mono","Courier New",monospace;font-weight:700;font-size:18px;letter-spacing:3px;color:var(--deep)}
+.loading-sub{color:var(--muted);font-size:14px}
 .share-btn{background:var(--sienna);margin-top:14px;box-shadow:0 2px 8px rgba(160,82,45,.25)}
 .hint,.calm{color:var(--muted);font-size:14px;line-height:1.55}
 .list-heading{margin:20px 0 4px;font-size:15px}
