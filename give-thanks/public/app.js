@@ -479,12 +479,64 @@ function drawArtCard() {
   x.fillStyle = '#A0522D'; x.font = '32px monospace'; x.fillText('made with Give Thanks', 60, 1260);
   return c;
 }
+function dataURLToBlob(dataURL) {
+  // Synchronous dataURL -> Blob, so navigator.share() can be called in
+  // the same tap as the button — no await before it.
+  const parts = dataURL.split(',');
+  const mime = (parts[0].match(/:(.*?);/) || [])[1] || 'image/png';
+  const bin = atob(parts[1]);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return new Blob([bytes], { type: mime });
+}
 async function shareAsArt() {
-  const canvas = drawArtCard();
-  const blob = await new Promise(r => canvas.toBlob(r, 'image/png'));
-  const file = new File([blob], 'give-thanks-' + state.today.date + '.png', { type: 'image/png' });
-  if (navigator.canShare && navigator.canShare({ files: [file] })) { try { await navigator.share({ title: 'Give Thanks', files: [file] }); return; } catch (e) {} }
-  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = file.name; a.click();
+  // BUG FOUND 2026-11-17 (dab: "share as art page also fails on mobile"):
+  // the old code did `await canvas.toBlob(...)` BEFORE navigator.share().
+  // Web Share needs transient user activation — that await lets the tap
+  // expire, so share() throws NotAllowedError in Telegram's WebView /
+  // iOS WKWebView, and the fallback (an <a download> click on a detached
+  // anchor) is ignored there too, so the button silently did nothing.
+  // Fix: build the File synchronously from a data URL, call share() in
+  // the same tick as the tap, and if sharing is unavailable, show the
+  // image in the app itself — long-press to save — instead of failing
+  // silently. AbortError (user cancelled the sheet) is not an error.
+  const status = el('artStatus');
+  const preview = el('artPreview');
+  const setArtStatus = (t) => { if (status) status.textContent = t; };
+  let file;
+  try {
+    const canvas = drawArtCard();
+    const dataURL = canvas.toDataURL('image/png');
+    if (!dataURL || dataURL === 'data:,') throw new Error('empty canvas');
+    file = new File([dataURLToBlob(dataURL)], 'give-thanks-' + state.today.date + '.png', { type: 'image/png' });
+  } catch (e) {
+    setArtStatus('Couldn’t draw the art page — try again.');
+    return;
+  }
+  if (navigator.share && navigator.canShare && navigator.canShare({ files: [file] })) {
+    try {
+      await navigator.share({ title: 'Give Thanks', files: [file] });
+      setArtStatus('Shared 🌱');
+      return;
+    } catch (e) {
+      if (e && e.name === 'AbortError') return; // user cancelled the sheet
+      // fall through to the in-app preview below
+    }
+  }
+  // No working share sheet in this view (Telegram WebView / iOS): show
+  // the image here so it can be long-pressed and saved, then shared
+  // from Photos. Also try a download link for desktop browsers.
+  try {
+    const url = URL.createObjectURL(file);
+    if (preview) { preview.src = url; preview.style.display = ''; }
+    setArtStatus('Sharing isn’t available in this view — long-press the image below to save it, then share it from Photos.');
+    const a = document.createElement('a');
+    a.href = url; a.download = file.name; a.style.display = 'none';
+    document.body.appendChild(a); a.click();
+    setTimeout(() => { try { document.body.removeChild(a); } catch (e) {} }, 1000);
+  } catch (e) {
+    setArtStatus('Couldn’t share the image here — try “Share as message” instead.');
+  }
 }
 function pressIndexForNote(noteIdx) {
   // The press-history entry for the noteIdx-th note: the (noteIdx+1)-th

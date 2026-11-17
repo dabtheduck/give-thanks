@@ -117,17 +117,34 @@ function serverDayStr(now, tz) {
 }
 
 // ---- Telegram initData validation ----
+// BUG FOUND 2026-11-17 (dab reported "invalid initData" on the recap
+// button, and /api/sync had silently 401'd all along — which is why the
+// server never learned the app's thanks and /recap kept saying 0):
+// the secret was SHA256(BOT_TOKEN). That is the Telegram *Login widget*
+// scheme. For WebApp / Mini App initData the secret is
+//   HMAC-SHA256(key="WebAppData", message=BOT_TOKEN)
+// per core.telegram.org/bots/webapps#validating-data-received-via-the-mini-app
+// and docs.telegram-mini-apps.com/platform/init-data. Verified against
+// Telegram's own test vector (token 5768337691:AAH5YkoiEuPk8-FZa32hStHTqXiLPtAEhx8,
+// initData hash c501b71e…): old code produced 20ab0e87…, new code produces
+// c501b71e… exactly, and secret hex a5c609aa… exactly.
+// Only `hash` is excluded from the data-check-string; `signature` (Bot API
+// 8.0, for third-party Ed25519 checks) stays in, like any other field.
+// No auth_date expiry check: dab leaves the app open overnight, and a
+// stale-but-genuine launch must still be able to send its recap.
 function validateInitData(initData) {
   if (!initData || !BOT_TOKEN) return null;
   try {
     const params = new URLSearchParams(initData);
     const hash = params.get('hash');
+    if (!hash) return null;
     params.delete('hash');
     const pairs = [];
-    for (const [k, v] of [...params.entries()].sort()) pairs.push(`${k}=${v}`);
-    const secret = crypto.createHash('sha256').update(BOT_TOKEN).digest();
+    for (const [k, v] of [...params.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) pairs.push(`${k}=${v}`);
+    const secret = crypto.createHmac('sha256', 'WebAppData').update(BOT_TOKEN).digest();
     const hmac = crypto.createHmac('sha256', secret).update(pairs.join('\n')).digest('hex');
-    if (hmac !== hash) return null;
+    if (hmac.length !== hash.length) return null;
+    if (!crypto.timingSafeEqual(Buffer.from(hmac, 'utf8'), Buffer.from(hash, 'utf8'))) return null;
     const user = JSON.parse(params.get('user') || '{}');
     if (!user.id) return null;
     return user;
@@ -253,7 +270,7 @@ const app = express();
 app.use(express.json({ limit: '200kb' }));
 // No-store for app assets: the live counter once stayed broken because browsers /
 // Telegram WebView kept serving a cached pre-fix app.js after a redeploy.
-// (index.html also loads app.js/style.css/themes.js with ?v=20261117j.)
+// (index.html also loads app.js/style.css/themes.js with ?v=20261117k.)
 app.use(express.static(path.join(__dirname, 'public'), {
   maxAge: 0, etag: false,
   setHeaders(res, filePath) { if (/\.(js|css|html)$/.test(filePath)) res.set('Cache-Control', 'no-store'); },
