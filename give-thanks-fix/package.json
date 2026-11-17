@@ -1,1 +1,0 @@
-{"dependencies":{"express":"^4.19.2","node-cron":"^3.0.3","telegraf":"^4.16.3"},"description":"Give Thanks — Telegram Bot + Mini App gratitude counter. Cozy pixel art, low cortisol.","engines":{"node":">=20"},"main":"server.js","name":"give-thanks","scripts":{"dev":"node server.js","start":"node server.js"},"type":"commonjs","version":"1.0.0"}
