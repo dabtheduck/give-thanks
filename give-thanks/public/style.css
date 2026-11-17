@@ -79,6 +79,17 @@ h3{font-family:"Space Mono","Courier New",monospace;margin:0 0 8px;font-size:16p
 .note-edit-input{width:100%;padding:10px;border:1px solid var(--forest);border-radius:10px;background:#fff;font-size:15px;font-family:inherit}
 .garden-open-btn{display:block;width:100%;padding:12px;margin:8px 0;background:var(--card);border:1px solid var(--line);border-radius:12px;font-size:15px;cursor:pointer;text-align:left}
 .garden-recap-plant{font-size:18px;margin-right:2px}
+/* Garden list (v5.6): each garden is a row labelled with its group chat
+   name, with reorder / archive / delete controls. The back button in a
+   garden view toggles back to the list. */
+.garden-back-btn{display:block;margin:0 0 8px;background:none;border:1px solid var(--line);border-radius:10px;padding:8px 12px;font-size:14px;font-weight:700;color:var(--forest);cursor:pointer;background:var(--card)}
+.garden-row{display:flex;align-items:center;gap:6px;margin:8px 0}
+.garden-row .garden-open-btn{flex:1;margin:0}
+.garden-row-btn{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:10px 9px;font-size:15px;cursor:pointer;color:var(--muted);flex-shrink:0}
+.garden-row-btn:hover{color:var(--ink);border-color:var(--sage)}
+.garden-row-btn.danger:hover{color:#B3261E;border-color:#B3261E}
+.garden-archived{margin-top:18px}
+.garden-archived summary{cursor:pointer;font-weight:700;color:var(--muted);font-size:14px;padding:6px 0}
 .delete-note:hover{color:#B3261E;background:#FBEDEA}
 .share-check input{accent-color:var(--forest)}
 .private-note{filter:blur(1px);opacity:.65}

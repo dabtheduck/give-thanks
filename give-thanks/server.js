@@ -88,6 +88,9 @@ function defaultUser(chatId) {
     // chosen plant species per group garden. Both persist in data.json.
     pendingBot: [],
     plantChoices: {},
+    // v5.6: gardens the user archived in the 1:1 app (hidden from the main
+    // list, restorable). Persisted in data.json, synced from the app.
+    archivedGardens: [],
     // v5.1: the app-day of the last successful /api/sync, in the user's
     // timezone. Lets /recap and /share tell "not synced yet" apart from
     // "genuinely empty". Null = never synced. Persisted in data.json.
@@ -518,7 +521,7 @@ const app = express();
 app.use(express.json({ limit: '200kb' }));
 // No-store for app assets: the live counter once stayed broken because browsers /
 // Telegram WebView kept serving a cached pre-fix app.js after a redeploy.
-// (index.html also loads app.js/style.css/themes.js with ?v=20261117r.)
+// (index.html also loads app.js/style.css/themes.js with ?v=20261117t.)
 app.use(express.static(path.join(__dirname, 'public'), {
   maxAge: 0, etag: false,
   setHeaders(res, filePath) { if (/\.(js|css|html)$/.test(filePath)) res.set('Cache-Control', 'no-store'); },
@@ -548,6 +551,9 @@ app.post('/api/sync', (req, res) => {
     if (typeof s.notifyOnlyIfEmpty === 'boolean') u.notifyOnlyIfEmpty = s.notifyOnlyIfEmpty;
     if (typeof s.gardenOptIn === 'boolean') u.gardenOptIn = s.gardenOptIn;
     if (Array.isArray(s.groupGardens)) u.groupGardens = s.groupGardens;
+    // v5.6: archived gardens (hidden from the main list, restorable).
+    // Synced from the app's settings, same as groupGardens.
+    if (Array.isArray(s.archivedGardens)) u.archivedGardens = s.archivedGardens;
     if (s.features && typeof s.features === 'object') u.features = { ...u.features, ...s.features };
     u.version = CURRENT_VERSION;
     saveSettings();
@@ -622,16 +628,29 @@ app.post('/api/recap', async (req, res) => {
   }
 });
 
-app.get('/api/state', (req, res) => {
+app.get('/api/state', async (req, res) => {
   const user = validateInitData(req.query.initData || '');
   let userId = user?.id;
   if (!userId && MINI_APP_URL.includes('localhost')) userId = req.query.userId || 'preview-user';
   if (!userId) return res.status(401).json({ ok: false, error: 'invalid initData' });
   const u = getUser(userId, userId);
   rolloverUserToday(u);
+  // Garden titles (v5.6): the app labels each garden with its group chat
+  // name instead of "Open group garden". The title lives on the garden
+  // record; if the server restarted and the store is empty, fetch it
+  // from Telegram (and keep it on the record so the next call is free).
+  const gardenTitles = {};
+  for (const gid of (u.groupGardens || [])) {
+    const g = getGarden(gardens, String(gid));
+    let title = g.title || '';
+    if (!title) {
+      try { const chat = await bot.telegram.getChat(String(gid)); title = chat.title || ''; if (title) g.title = title; } catch (e) {}
+    }
+    gardenTitles[String(gid)] = title || ('Group ' + gid);
+  }
   // pendingBot: bot-logged thanks the app hasn't picked up yet, so the
   // app can merge them in on open (v5, /thanks).
-  res.json({ ok: true, settings: { timezone: u.timezone, resetHour: FIXED_RESET_HOUR, resetMinute: FIXED_RESET_MINUTE, notifyHour: FIXED_NOTIFY_HOUR, notifyMinute: FIXED_NOTIFY_MINUTE, notificationsOn: u.notificationsOn, notifyOnlyIfEmpty: u.notifyOnlyIfEmpty, gardenOptIn: u.gardenOptIn, groupGardens: u.groupGardens }, today: u.today, pendingBot: u.pendingBot });
+  res.json({ ok: true, settings: { timezone: u.timezone, resetHour: FIXED_RESET_HOUR, resetMinute: FIXED_RESET_MINUTE, notifyHour: FIXED_NOTIFY_HOUR, notifyMinute: FIXED_NOTIFY_MINUTE, notificationsOn: u.notificationsOn, notifyOnlyIfEmpty: u.notifyOnlyIfEmpty, gardenOptIn: u.gardenOptIn, groupGardens: u.groupGardens, archivedGardens: u.archivedGardens || [], gardenTitles }, today: u.today, pendingBot: u.pendingBot });
 });
 
 app.get('/api/about', (req, res) => res.json({ ok: true, text: getAboutText() }));
@@ -715,6 +734,12 @@ app.listen(PORT, () => console.log(`[give-thanks] Mini App at http://localhost:$
 if (BOT_TOKEN) {
   bot.telegram.setMyCommands(PRIVATE_COMMANDS, { scope: { type: 'all_private_chats' } }).then(() => console.log('[give-thanks] private command menu set')).catch(e => console.error('setMyCommands private', e.message));
   bot.telegram.setMyCommands(GROUP_COMMANDS, { scope: { type: 'all_group_chats' } }).then(() => console.log('[give-thanks] group command menu set')).catch(e => console.error('setMyCommands group', e.message));
+  // The Menu Button opens the Mini App — and it is what a t.me deep link
+  // (t.me/givethanksbot?startapp=garden_<id>) launches. Without it, the
+  // deep link fails with "something went wrong" (dab, 2026-11-17). The
+  // bot sets it itself on every start, so no manual BotFather step and
+  // no flaky connector call is needed; the server's own token is valid.
+  bot.telegram.setChatMenuButton({ type: 'web_app', text: 'Give Thanks', web_app: { url: MINI_APP_URL } }).then(() => console.log('[give-thanks] menu button set to the Mini App')).catch(e => console.error('setChatMenuButton', e.message));
 }
 // Launch with retries: during a Render deploy the old instance may still
 // be polling when the new one starts, Telegram answers 409, and the new

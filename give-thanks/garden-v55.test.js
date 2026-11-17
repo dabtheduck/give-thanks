@@ -1,19 +1,23 @@
-// Give Thanks — garden v5.5 test (dab, 2026-11-17).
-// The group garden was disconnected from the 1:1 Mini App: the server
-// knew about group gardens (via /garden) but the app never asked, so the
-// Garden tab showed the setup line instead of the garden. And tapping a
-// flower did literally nothing (no highlight, no "saving…").
-// v5.5: fetchServerState merges the server's groupGardens into settings
-// (so the Garden tab shows the user's gardens in the 1:1 app), the picker
-// uses one delegated listener (survives re-renders) and pickPlant says so
-// instead of failing silently, the garden shows "Your thanks today: N"
-// (linked to the personal counter), and an in-app recap list shows the
-// shared notes with their plants.
+// Give Thanks — garden v5.5 + v5.6 test (dab, 2026-11-17).
+// v5.5: the group garden was disconnected from the 1:1 Mini App (the app
+// never asked the server for groupGardens), tapping a flower did nothing,
+// and the garden's counter showed 0. Fixed: fetchServerState merges the
+// server's groupGardens, the picker uses one delegated listener, the
+// garden shows "Your thanks today: N", and an in-app recap lists the
+// shared notes. A raw Mini App URL pasted as text opens in the browser,
+// so garden links are t.me deep links and the app reads the garden from
+// initDataUnsafe.start_param too.
+// v5.6: the garden list labelled every garden "Open group garden" (no
+// group names), there was no way to toggle back to the list from a garden,
+// and no way to delete / archive / reorder gardens. Fixed: /api/state
+// returns gardenTitles, each list row is labelled with its group chat
+// name, a "← Your gardens" button toggles back to the list, and each row
+// has ↑ ↓ (reorder), 📥 (archive) and × (delete) controls, with an
+// archived section that can restore a garden.
 //
 // Run: node garden-v55.test.js   (jsdom 31.0.1, in /tmp/gt-test)
 const { JSDOM } = require('jsdom');
 const fs = require('node:fs');
-const path = require('node:path');
 const assert = require('node:assert/strict');
 
 const APP = fs.readFileSync('/home/hatch/workspace/give-thanks/public/app.js', 'utf8');
@@ -21,6 +25,7 @@ const HTML = fs.readFileSync('/home/hatch/workspace/give-thanks/public/index.htm
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const GARDEN_ID = '-100123';
+const GARDEN_ID_2 = '-100456';
 const PLANTS = [
   { id: 'sunflower', name: 'Sunflower', emoji: '🌻' },
   { id: 'tulip', name: 'Tulip', emoji: '🌷' },
@@ -38,8 +43,6 @@ function boot(startParam) {
     WebApp: {
       ready() {}, expand() {},
       initData: 'query_id=test&user=%7B%22id%22%3A42%7D&auth_date=1700000000&hash=deadbeef',
-      // start_param: how Telegram passes the deep link's ?startapp= when
-      // a garden link is tapped as text (t.me/givethanksbot?startapp=...).
       initDataUnsafe: startParam ? { start_param: startParam } : {},
       HapticFeedback: { impactOccurred() {} },
       CloudStorage: {
@@ -57,11 +60,11 @@ function boot(startParam) {
   window.fetch = async (url, opts = {}) => {
     fetchCalls.push({ url: String(url), opts });
     if (String(url).startsWith('/api/state')) {
-      return { ok: true, json: async () => ({ ok: true, pendingBot: [], settings: { groupGardens: [GARDEN_ID] } }) };
+      return { ok: true, json: async () => ({ ok: true, pendingBot: [], settings: { groupGardens: [GARDEN_ID, GARDEN_ID_2], archivedGardens: [], gardenTitles: { [GARDEN_ID]: 'Family Chat', [GARDEN_ID_2]: 'Work Friends' } } }) };
     }
     if (String(url).startsWith('/api/garden?')) {
       return { ok: true, json: async () => ({
-        ok: true, gardenId: GARDEN_ID, title: 'Test group', memberCount: 2,
+        ok: true, gardenId: GARDEN_ID, title: 'Family Chat', memberCount: 2,
         notes: [
           { id: 'n1', plant: 'tulip', emoji: '🌷', plantName: 'Tulip', text: 'good food', time: '12:00', date: '2026-11-17' },
           { id: 'n2', plant: 'sunflower', emoji: '🌻', plantName: 'Sunflower', text: 'a kind word', time: '13:00', date: '2026-11-17' },
@@ -70,8 +73,6 @@ function boot(startParam) {
       }) };
     }
     if (String(url) === '/api/garden/plant') {
-      // Stateful stub: a real server saves the pick, so the next garden
-      // load returns the NEW plant (not the old one).
       try { serverMyPlant = JSON.parse(opts.body || '{}').plant || serverMyPlant; } catch (e) {}
       return { ok: true, json: async () => ({ ok: true, plant: serverMyPlant }) };
     }
@@ -79,61 +80,101 @@ function boot(startParam) {
     if (String(url) === '/api/about') return { ok: true, json: async () => ({ ok: true, text: '' }) };
     return { ok: false, json: async () => ({}) };
   };
-  // Drive the app through its top-level function declarations (jsdom:
-  // only function declarations are visible across window.eval calls).
   window.eval(APP);
   return { window, document: window.document, cloud, local, fetchCalls };
 }
+
+const settingsOf = (cloud) => JSON.parse(cloud.get('gt_settings') || '{}');
+const click = (window, el) => el.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
 
 (async () => {
   const { window, document, cloud, fetchCalls } = boot();
   await sleep(300);
 
-  // 1. Garden sync: /api/state returns groupGardens; the app merges them
-  //    into settings (CloudStorage gt_settings) so the Garden tab can
-  //    show the garden in the 1:1 app.
+  // 1. Garden sync: /api/state returns groupGardens + gardenTitles; the
+  //    app merges them into settings so the Garden tab can show the
+  //    gardens in the 1:1 app.
   window.fetchServerState();
   await sleep(300);
-  const settings = JSON.parse(cloud.get('gt_settings') || '{}');
-  assert.ok(Array.isArray(settings.groupGardens) && settings.groupGardens.includes(GARDEN_ID),
-    'groupGardens from /api/state must be merged into settings, got ' + JSON.stringify(settings.groupGardens));
+  let settings = settingsOf(cloud);
+  assert.ok(settings.groupGardens && settings.groupGardens.includes(GARDEN_ID) && settings.groupGardens.includes(GARDEN_ID_2),
+    'groupGardens must merge into settings, got ' + JSON.stringify(settings.groupGardens));
+  assert.strictEqual(settings.gardenTitles && settings.gardenTitles[GARDEN_ID], 'Family Chat',
+    'gardenTitles must merge into settings, got ' + JSON.stringify(settings.gardenTitles));
 
-  // 2. Garden tab: a single known garden auto-opens — groupGarden shown,
-  //    the setup line hidden.
+  // 2. Garden list: each row is labelled with its GROUP CHAT NAME, not
+  //    "Open group garden".
   window.switchTab('garden');
   await sleep(300);
-  assert.notStrictEqual(document.getElementById('groupGarden').style.display, 'none', 'group garden must show');
-  assert.strictEqual(document.getElementById('gardenSetup').style.display, 'none', 'setup line must hide once a garden is known');
-  assert.ok(document.getElementById('groupGardenTitle').textContent.includes('Test group'), 'garden title must load');
+  const list = document.getElementById('gardenList');
+  assert.notStrictEqual(list.style.display, 'none', 'garden list must show when there are gardens');
+  assert.ok(list.textContent.includes('Family Chat'), 'list must label the first garden Family Chat, got: ' + list.textContent);
+  assert.ok(list.textContent.includes('Work Friends'), 'list must label the second garden Work Friends');
+  assert.ok(!list.textContent.includes('Open group garden'), 'no row may say the generic "Open group garden"');
 
-  // 3. "Your thanks today" links the garden to the personal counter.
-  const myCount = document.getElementById('gardenMyCount').textContent;
-  assert.ok(/Your thanks today: \d+ thanks/.test(myCount), 'garden must show the personal count, got: ' + myCount);
+  // 3. Toggle: tap a garden's name to open it, then "← Your gardens"
+  //    goes back to the list.
+  click(window, list.querySelector('[data-action="open"][data-garden="' + GARDEN_ID + '"]'));
+  await sleep(300);
+  assert.notStrictEqual(document.getElementById('groupGarden').style.display, 'none', 'tapping a garden must open it');
+  assert.ok(document.getElementById('groupGardenTitle').textContent.includes('Family Chat'), 'the opened garden must be Family Chat');
+  const backBtn = document.getElementById('gardenBackBtn');
+  assert.notStrictEqual(backBtn.style.display, 'none', 'the back button must show in a garden view');
+  click(window, backBtn);
+  await sleep(300);
+  assert.notStrictEqual(document.getElementById('gardenList').style.display, 'none', 'back button must return to the garden list');
+  assert.strictEqual(document.getElementById('groupGarden').style.display, 'none', 'the garden view must hide when back on the list');
 
-  // 4. Picker (delegated): tapping a flower POSTs /api/garden/plant and
-  //    shows the pick. The tap used to do literally nothing.
-  const picker = document.getElementById('plantPicker');
-  const tulipBtn = picker.querySelector('[data-plant="tulip"]');
+  // 4. Reorder: move "Work Friends" up — it becomes first in settings.
+  click(window, list.querySelector('[data-action="up"][data-garden="' + GARDEN_ID_2 + '"]'));
+  await sleep(200);
+  settings = settingsOf(cloud);
+  assert.strictEqual(settings.groupGardens[0], GARDEN_ID_2, 'moving Work Friends up must make it first, got ' + JSON.stringify(settings.groupGardens));
+  // ... and the list re-renders in the new order.
+  assert.ok(list.textContent.indexOf('Work Friends') < list.textContent.indexOf('Family Chat'), 'the list must re-render in the new order');
+
+  // 5. Archive: archiving Family Chat moves it to the archived section;
+  //    restoring brings it back to the main list.
+  click(window, list.querySelector('[data-action="archive"][data-garden="' + GARDEN_ID + '"]'));
+  await sleep(200);
+  settings = settingsOf(cloud);
+  assert.ok(!settings.groupGardens.includes(GARDEN_ID) && settings.archivedGardens.includes(GARDEN_ID),
+    'archiving must move the garden out of groupGardens and into archivedGardens, got ' + JSON.stringify(settings));
+  assert.ok(document.querySelector('.garden-archived') && document.querySelector('.garden-archived').textContent.includes('Family Chat'),
+    'the archived section must show the archived garden');
+  click(window, list.querySelector('[data-action="unarchive"][data-garden="' + GARDEN_ID + '"]'));
+  await sleep(200);
+  settings = settingsOf(cloud);
+  assert.ok(settings.groupGardens.includes(GARDEN_ID) && !settings.archivedGardens.includes(GARDEN_ID),
+    'restoring must move the garden back to groupGardens, got ' + JSON.stringify(settings));
+
+  // 6. Delete: removing Work Friends drops it from the list entirely.
+  click(window, list.querySelector('[data-action="remove"][data-garden="' + GARDEN_ID_2 + '"]'));
+  await sleep(200);
+  settings = settingsOf(cloud);
+  assert.ok(!settings.groupGardens.includes(GARDEN_ID_2) && !settings.archivedGardens.includes(GARDEN_ID_2),
+    'deleting must remove the garden from both lists, got ' + JSON.stringify(settings));
+  assert.ok(!list.textContent.includes('Work Friends'), 'the deleted garden must leave the list');
+
+  // 7. Open the remaining garden again and check the garden view: the
+  //    personal count link, the picker, and the in-app recap.
+  click(window, list.querySelector('[data-action="open"][data-garden="' + GARDEN_ID + '"]'));
+  await sleep(300);
+  assert.ok(/Your thanks today: \d+ thanks/.test(document.getElementById('gardenMyCount').textContent),
+    'garden must show the personal count, got: ' + document.getElementById('gardenMyCount').textContent);
+  const tulipBtn = document.getElementById('plantPicker').querySelector('[data-plant="tulip"]');
   assert.ok(tulipBtn, 'picker must have a tulip button');
-  tulipBtn.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+  click(window, tulipBtn);
   await sleep(300);
   const plantCall = fetchCalls.find((c) => c.url === '/api/garden/plant');
-  assert.ok(plantCall, 'tapping a flower must POST /api/garden/plant');
-  assert.ok(JSON.parse(plantCall.opts.body).plant === 'tulip', 'the POST must carry the picked plant');
+  assert.ok(plantCall && JSON.parse(plantCall.opts.body).plant === 'tulip', 'tapping a flower must POST the pick');
   assert.ok(document.getElementById('plantStatus').textContent.includes('Tulip'), 'status must confirm the pick, got: ' + document.getElementById('plantStatus').textContent);
-
-  // 5. In-app recap: the shared notes as a list, plant + note.
   const recap = document.getElementById('gardenRecapList');
-  assert.ok(recap.textContent.includes('good food') && recap.textContent.includes('a kind word'),
-    'recap list must show the shared notes, got: ' + recap.textContent);
-  assert.ok(recap.textContent.includes('🌷') && recap.textContent.includes('🌻'),
-    'recap list must show each note’s plant');
+  assert.ok(recap.textContent.includes('good food') && recap.textContent.includes('🌷'),
+    'recap list must show the shared notes with their plants, got: ' + recap.textContent);
 
-  // 6. Deep link: a garden opened from a t.me link (start_param, no
+  // 8. Deep link: a garden opened from a t.me link (start_param, no
   //    ?startapp= in the URL) must open that garden, not the setup line.
-  //    A raw Mini App URL pasted as text opens in the browser (dab,
-  //    2026-11-17), so the link is a t.me deep link and the app must read
-  //    the garden from initDataUnsafe.start_param.
   const b2 = boot('garden_' + GARDEN_ID);
   await sleep(300);
   b2.window.fetchServerState();
@@ -142,8 +183,8 @@ function boot(startParam) {
   await sleep(300);
   assert.notStrictEqual(b2.document.getElementById('groupGarden').style.display, 'none',
     'a garden opened via start_param must show the group garden');
-  assert.ok(b2.document.getElementById('groupGardenTitle').textContent.includes('Test group'),
+  assert.ok(b2.document.getElementById('groupGardenTitle').textContent.includes('Family Chat'),
     'the start_param garden must load, got: ' + b2.document.getElementById('groupGardenTitle').textContent);
 
-  console.log('garden v5.5: all tests pass (gardens sync into the 1:1 app, picker tap saves, my-count link, in-app recap, t.me deep link via start_param)');
-})().catch((e) => { console.error('garden v5.5 FAILED:', e.message); process.exit(1); });
+  console.log('garden v5.5+v5.6: all tests pass (names, toggle, reorder, archive/restore, delete, picker, recap, t.me deep link)');
+})().catch((e) => { console.error('garden v5.5+v5.6 FAILED:', e.message); process.exit(1); });

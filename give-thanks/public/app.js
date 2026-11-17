@@ -57,6 +57,11 @@ function migrateSettings(raw) {
   if (typeof s.notifyOnlyIfEmpty !== 'boolean') s.notifyOnlyIfEmpty = true;
   if (typeof s.gardenOptIn !== 'boolean') s.gardenOptIn = false;
   if (!Array.isArray(s.groupGardens)) s.groupGardens = [];
+  // v5.6: gardens the user archived (hidden from the main list,
+  // restorable) and the group-chat name for each garden (so the list
+  // labels each garden with its name, not "Open group garden").
+  if (!Array.isArray(s.archivedGardens)) s.archivedGardens = [];
+  if (!s.gardenTitles || typeof s.gardenTitles !== 'object' || Array.isArray(s.gardenTitles)) s.gardenTitles = {};
   return s;
 }
 function migrateToday(raw) {
@@ -121,7 +126,7 @@ function timeNow() {
 
 const state = {
   today: { version: DATA_VERSION, date: todayKey(), count: 0, notes: [] },
-  settings: { version: DATA_VERSION, timezone: DEFAULT_TZ, notificationsOn: true, notifyOnlyIfEmpty: true, gardenOptIn: false, groupGardens: [], features: { gardenWeeklyShare: false, newRecapFormat: false, shareOutsideTelegram: true } },
+  settings: { version: DATA_VERSION, timezone: DEFAULT_TZ, notificationsOn: true, notifyOnlyIfEmpty: true, gardenOptIn: false, groupGardens: [], archivedGardens: [], gardenTitles: {}, features: { gardenWeeklyShare: false, newRecapFormat: false, shareOutsideTelegram: true } },
   gardenId: 'personal',
   // Undo history: one entry per press, in press order. true = that press had
   // a note, false = count-only press. Without it, undo can't tell whether
@@ -584,6 +589,24 @@ async function fetchServerState() {
         renderGardenTab();
       }
     }
+    // v5.6: the server also sends the group-chat name for each garden
+    // (gardenTitles) and the user's archived gardens. Titles are cached
+    // in settings so the list stays labelled even after a server
+    // restart (when the server's titles are empty until re-fetched);
+    // server titles win when present because they are fresher.
+    if (j && j.settings && j.settings.gardenTitles && typeof j.settings.gardenTitles === 'object') {
+      const titles = state.settings.gardenTitles || {};
+      let changed = false;
+      for (const [gid, title] of Object.entries(j.settings.gardenTitles)) {
+        if (title && titles[String(gid)] !== title) { titles[String(gid)] = title; changed = true; }
+      }
+      if (changed) { state.settings.gardenTitles = titles; saveSettings(); renderGardenTab(); }
+    }
+    if (j && j.settings && Array.isArray(j.settings.archivedGardens)) {
+      const before = (state.settings.archivedGardens || []).map(String);
+      const merged = Array.from(new Set([...before, ...j.settings.archivedGardens.map(String)]));
+      if (merged.length !== before.length) { state.settings.archivedGardens = merged; saveSettings(); renderGardenTab(); }
+    }
     const pending = Array.isArray(j.pendingBot) ? j.pendingBot : [];
     if (!pending.length) return;
     let changed = false;
@@ -698,13 +721,16 @@ const GARDEN_PLANTS_FALLBACK = [
 ];
 const groupGarden = { title: '', notes: [], myPlant: '', plants: GARDEN_PLANTS_FALLBACK, memberCount: 0, loaded: false, error: '' };
 
-async function loadGarden() {
+async function loadGarden(forceList) {
   // Gardens are group-only (dab, 2026-11-17) — the personal garden was
   // deleted in v5.3. If the app was opened without a garden (menu button),
   // show the user's group gardens — or how to set one up if there are none.
+  // forceList (the "← Your gardens" back button, v5.6) shows the list
+  // even when there is exactly one garden — otherwise a single garden
+  // auto-opens and the back button would bounce straight back into it.
   if (state.gardenId === 'personal') {
     const gardens = Array.isArray(state.settings.groupGardens) ? state.settings.groupGardens.map(String) : [];
-    if (gardens.length === 1) {
+    if (gardens.length === 1 && !forceList) {
       // One garden: just open it.
       state.gardenId = gardens[0];
     } else {
@@ -753,20 +779,67 @@ function renderGardenTab() {
   if (!group || !list || !setup) return;
   const isGroup = state.gardenId !== 'personal';
   const gardens = Array.isArray(state.settings.groupGardens) ? state.settings.groupGardens : [];
+  const archived = Array.isArray(state.settings.archivedGardens) ? state.settings.archivedGardens : [];
   group.style.display = isGroup ? '' : 'none';
-  list.style.display = (!isGroup && gardens.length > 1) ? '' : 'none';
-  setup.style.display = (!isGroup && gardens.length === 0) ? '' : 'none';
+  list.style.display = (!isGroup && (gardens.length > 0 || archived.length > 0)) ? '' : 'none';
+  setup.style.display = (!isGroup && gardens.length === 0 && archived.length === 0) ? '' : 'none';
   if (!isGroup) {
-    // No garden open: a list of the user's gardens to open, or the setup
-    // line if they have none yet.
-    if (gardens.length > 1) {
-      list.innerHTML = '<h3>Your group gardens</h3><p class="calm">Tap one to open it.</p>' + gardens.map((gid) => '<button type="button" class="garden-open-btn" data-garden="' + escapeHtml(String(gid)) + '">🌸 Open group garden</button>').join('');
-      list.querySelectorAll('[data-garden]').forEach((b) => b.addEventListener('click', () => {
-        state.gardenId = b.dataset.garden;
-        loadGarden();
-      }));
+    // No garden open: the user's gardens, each labelled with its group
+    // chat name (dab, 2026-11-17 — they all used to say "Open group
+    // garden"), plus reorder / archive / delete controls, and an
+    // archived section. Tap a garden's name to open it.
+    let html = '<h3>Your group gardens</h3><p class="calm">Tap a garden to open it. Use the arrows to reorder, 📥 to archive, × to remove it from your list.</p>';
+    gardens.forEach((gid, i) => {
+      const id = escapeHtml(String(gid));
+      html += '<div class="garden-row">'
+        + '<button type="button" class="garden-open-btn" data-action="open" data-garden="' + id + '">🌸 ' + escapeHtml(gardenTitle(gid)) + '</button>'
+        + '<button type="button" class="garden-row-btn" data-action="up" data-garden="' + id + '" aria-label="Move up"' + (i === 0 ? ' disabled' : '') + '>↑</button>'
+        + '<button type="button" class="garden-row-btn" data-action="down" data-garden="' + id + '" aria-label="Move down"' + (i === gardens.length - 1 ? ' disabled' : '') + '>↓</button>'
+        + '<button type="button" class="garden-row-btn" data-action="archive" data-garden="' + id + '" aria-label="Archive">📥</button>'
+        + '<button type="button" class="garden-row-btn danger" data-action="remove" data-garden="' + id + '" aria-label="Remove">×</button>'
+        + '</div>';
+    });
+    if (archived.length) {
+      html += '<details class="garden-archived"><summary>Archived gardens (' + archived.length + ')</summary>';
+      archived.forEach((gid) => {
+        const id = escapeHtml(String(gid));
+        html += '<div class="garden-row">'
+          + '<button type="button" class="garden-open-btn" data-action="open" data-garden="' + id + '">🌸 ' + escapeHtml(gardenTitle(gid)) + '</button>'
+          + '<button type="button" class="garden-row-btn" data-action="unarchive" data-garden="' + id + '" aria-label="Restore">↩ Restore</button>'
+          + '<button type="button" class="garden-row-btn danger" data-action="remove" data-garden="' + id + '" aria-label="Remove">×</button>'
+          + '</div>';
+      });
+      html += '</details>';
+    }
+    list.innerHTML = html;
+    // One delegated listener on the list, attached once — the rows are
+    // rebuilt on every render, so per-button listeners would be lost.
+    if (!list.dataset.bound) {
+      list.dataset.bound = '1';
+      list.addEventListener('click', (e) => {
+        const t = e.target && e.target.closest ? e.target.closest('[data-action]') : null;
+        if (!t || !t.dataset.garden) return;
+        const gid = t.dataset.garden;
+        const action = t.dataset.action;
+        if (action === 'open') { state.gardenId = gid; loadGarden(); }
+        else if (action === 'up') moveGarden(gid, -1);
+        else if (action === 'down') moveGarden(gid, 1);
+        else if (action === 'archive') archiveGarden(gid);
+        else if (action === 'unarchive') unarchiveGarden(gid);
+        else if (action === 'remove') removeGarden(gid);
+      });
     }
     return;
+  }
+  // A garden is open: the back button toggles to the list of gardens
+  // (dab, 2026-11-17). Shown whenever there is a list to go back to.
+  const backBtn = el('gardenBackBtn');
+  if (backBtn) {
+    backBtn.style.display = gardens.length > 0 ? '' : 'none';
+    if (!backBtn.dataset.bound) {
+      backBtn.dataset.bound = '1';
+      backBtn.addEventListener('click', () => { state.gardenId = 'personal'; loadGarden(true); });
+    }
   }
   setText('groupGardenTitle', groupGarden.title || 'Group garden');
   const status = el('groupGardenStatus');
@@ -843,6 +916,59 @@ function renderGardenTab() {
     }
   }
   updatePlantStatus();
+}
+
+// ---- Garden management (v5.6, dab 2026-11-17): name, reorder, archive,
+// delete. The list order IS the display order (settings.groupGardens);
+// archived gardens hide in a collapsed section and can be restored.
+// Deleting removes a garden from YOUR list only — the garden still exists
+// for the group, and opening it again (via /garden or its link) adds it
+// back. Every change saves settings and syncs to the server, so it
+// survives restarts and redeploys.
+function gardenTitle(gid) {
+  const titles = (state.settings && state.settings.gardenTitles) || {};
+  const t = titles[String(gid)];
+  if (t) return String(t);
+  // The garden itself may carry a title once loaded.
+  if (groupGarden && groupGarden.title && String(state.gardenId) === String(gid)) return groupGarden.title;
+  return 'Group ' + String(gid);
+}
+function saveGardenSettings() {
+  saveSettings();
+  renderGardenTab();
+}
+function moveGarden(gid, dir) {
+  const list = Array.isArray(state.settings.groupGardens) ? state.settings.groupGardens.map(String) : [];
+  const i = list.indexOf(String(gid));
+  const j = i + dir;
+  if (i < 0 || j < 0 || j >= list.length) return;
+  const tmp = list[i]; list[i] = list[j]; list[j] = tmp;
+  state.settings.groupGardens = list;
+  saveGardenSettings();
+}
+function archiveGarden(gid) {
+  const id = String(gid);
+  state.settings.groupGardens = (state.settings.groupGardens || []).map(String).filter((g) => g !== id);
+  const archived = (state.settings.archivedGardens || []).map(String);
+  if (!archived.includes(id)) archived.push(id);
+  state.settings.archivedGardens = archived;
+  if (String(state.gardenId) === id) state.gardenId = 'personal';
+  saveGardenSettings();
+}
+function unarchiveGarden(gid) {
+  const id = String(gid);
+  state.settings.archivedGardens = (state.settings.archivedGardens || []).map(String).filter((g) => g !== id);
+  const list = (state.settings.groupGardens || []).map(String);
+  if (!list.includes(id)) list.push(id);
+  state.settings.groupGardens = list;
+  saveGardenSettings();
+}
+function removeGarden(gid) {
+  const id = String(gid);
+  state.settings.groupGardens = (state.settings.groupGardens || []).map(String).filter((g) => g !== id);
+  state.settings.archivedGardens = (state.settings.archivedGardens || []).map(String).filter((g) => g !== id);
+  if (String(state.gardenId) === id) state.gardenId = 'personal';
+  saveGardenSettings();
 }
 
 function openNoteBubble(note) {

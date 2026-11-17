@@ -112,6 +112,10 @@ function migrateUser(raw) {
   // user's chosen plant per group garden. Both default empty.
   if (!Array.isArray(u.pendingBot)) u.pendingBot = [];
   if (!u.plantChoices || typeof u.plantChoices !== 'object' || Array.isArray(u.plantChoices)) u.plantChoices = {};
+  // v5.6: gardens the user archived (hidden from the main list, restorable)
+  // and gardens they deleted are just removed from groupGardens. Both
+  // default empty; archivedGardens is synced from the app's settings.
+  if (!Array.isArray(u.archivedGardens)) u.archivedGardens = [];
   // v5.1: the app-day of the last successful /api/sync (YYYY-MM-DD, in the
   // user's timezone). Lets /recap and /share tell "the app hasn't synced
   // today yet" apart from "the day is genuinely empty". Null = never synced.
