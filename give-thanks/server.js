@@ -33,7 +33,7 @@ const { CURRENT_VERSION, migrateUser, migrateToday, FIXED_RESET_HOUR, FIXED_RESE
 const { formatRecap, buildShareText, staleNotice, notSyncedNotice, recapStatus, displayDate } = require('./lib/recap');
 const { PLANTS, plantById, randomPlant, randomPlantExcluding } = require('./lib/plants');
 const { mergeSync } = require('./lib/merge');
-const { createGardenStore, getGarden, rolloverGarden, pruneGarden, addGardenNote, updateMemberPlant } = require('./lib/garden');
+const { createGardenStore, getGarden, rolloverGarden, pruneGarden, addGardenNote, updateMemberPlant, serializeGardens, deserializeGardens } = require('./lib/garden');
 const { formatAnnouncement, collectRecipients } = require('./lib/announce');
 
 // ---- env (no dotenv dependency, tiny parser) ----
@@ -71,12 +71,30 @@ if (!BOT_TOKEN) console.warn('[give-thanks] WARNING: BOT_TOKEN not set. Copy .en
 // removed scheduler — kept in the record so old data still migrates cleanly.)
 const DATA_FILE = path.join(__dirname, 'data.json');
 const users = new Map();
-// The garden store lives in lib/garden.js (daily reset at 03:00,
-// in-memory only — a restart/redeploy empties it and it rebuilds from
-// syncs, but since it resets every day anyway, a redeploy just resets it
-// early). The user's groupGardens list + plantChoices ARE persisted
+// The garden store lives in lib/garden.js (daily reset at 03:00).
+// v5.9: it is ALSO saved to disk (garden.json) on every change and
+// reloaded on startup, so a server restart (Render free tier sleeps
+// after 15 min idle) no longer empties the garden — the mango stays
+// (dab, 2026-11-17). A redeploy still wipes the file (Render resets the
+// filesystem); then the garden rebuilds from syncs as people open the
+// app again, because every app open re-plants that user's shareable
+// notes. The user's groupGardens list + plantChoices ARE persisted
 // (data.json), so the garden itself is re-discoverable after a restart.
+const GARDEN_FILE = path.join(__dirname, 'garden.json');
 const gardens = createGardenStore();
+function saveGardens() {
+  try { fs.writeFileSync(GARDEN_FILE, JSON.stringify(serializeGardens(gardens), null, 2)); } catch (e) { console.error('saveGardens', e.message); }
+}
+function loadGardens() {
+  try {
+    if (!fs.existsSync(GARDEN_FILE)) return;
+    const raw = JSON.parse(fs.readFileSync(GARDEN_FILE, 'utf8'));
+    const loaded = deserializeGardens(raw);
+    for (const [gid, g] of loaded) gardens.set(gid, g);
+    console.log(`[give-thanks] loaded ${gardens.size} garden(s) from disk`);
+  } catch (e) { console.error('loadGardens', e.message); }
+}
+loadGardens();
 
 function defaultUser(chatId) {
   return {
@@ -393,6 +411,7 @@ bot.command('garden', async (ctx) => {
   const g = getGarden(gardens, gid);
   g.title = ctx.chat.title || 'Group garden';
   g.members.add(ctx.from.id);
+  saveGardens(); // v5.9: a new garden was created (or gained a member) — save to disk.
   const u = getUser(ctx.from.id, ctx.chat.id);
   if (!u.groupGardens.includes(gid)) { u.groupGardens.push(gid); saveSettings(); }
   const url = MINI_APP_URL + '?startapp=garden_' + gid;
@@ -428,6 +447,7 @@ bot.command('sharerecap', async (ctx) => {
   // yesterday's plants never show up in today's sharerecap.
   rolloverGarden(g, day);
   pruneGarden(g);
+  saveGardens(); // v5.9: the garden may have rolled — save to disk.
   if (!g.notes.length) return ctx.reply('No shared thanks in this group yet today — tap + thanks in the app and tick share to plant one 🌱');
   const lines = [`🌱 Give Thanks — ${displayDate(day)}`, ``, `${g.notes.length} shared thanks in this group today.`, ``];
   for (const n of g.notes) {
@@ -743,6 +763,10 @@ app.post('/api/sync', (req, res) => {
         const authorPlant = plantFor(userId, gid, takenPlantsFor(gid, userId));
         for (const n of u.today.notes) addGardenNote(gardens, gid, userId, { ...n, date: u.today.date, plant: authorPlant.id });
       }
+      // v5.9: the garden changed (notes planted) — save it to disk so a
+      // restart keeps it. This is also what rebuilds the garden after a
+      // redeploy wipes the file: every app open re-syncs and re-plants.
+      saveGardens();
     } // end else (non-stale today)
   }
   res.json({ ok: true, count: u.today.count });
@@ -867,6 +891,9 @@ app.get('/api/garden', async (req, res) => {
   // v5.8: plants already used by OTHER members in this garden, so the
   // app can warn when the user picks a duplicate (tap again to confirm).
   const takenByOthers = Array.from(takenPlantsFor(gid, userId));
+  // v5.9: the garden may have rolled, backfilled a note's plant, or
+  // gained a member — save it to disk so a restart keeps it.
+  saveGardens();
   res.json({ ok: true, gardenId: gid, title: g.title || 'Group garden', memberCount: g.members.size, notes, myPlant: myPlant.id, plants: PLANTS, takenPlants: takenByOthers });
 });
 
@@ -888,6 +915,7 @@ app.post('/api/garden/plant', async (req, res) => {
   // would keep showing the plant they just changed away from.
   const g = getGarden(gardens, gid);
   updateMemberPlant(g, userId, plant.id);
+  saveGardens(); // v5.9: the notes' plants changed — save to disk.
   res.json({ ok: true, plant: plant.id });
 });
 

@@ -61,4 +61,50 @@ function updateMemberPlant(g, userId, plantId) {
   return n;
 }
 
-module.exports = { createGardenStore, getGarden, rolloverGarden, pruneGarden, addGardenNote, updateMemberPlant };
+// v5.9: persist the garden to disk (dab, 2026-11-17 — "save the garden
+// to disk"). The garden used to live only in memory, so a server restart
+// (Render free tier sleeps after 15 min idle) emptied it and a plant only
+// came back when its owner re-opened the app. Now the whole store —
+// EVERY garden, one per group — is written to a file on every change and
+// reloaded on startup, so a restart keeps the garden. A redeploy still
+// wipes the file (Render resets the filesystem), and then the garden
+// rebuilds from syncs as people open the app again.
+// A garden record is { title, members:Set, notes:[{id,userId,plant,text,
+// time,date}], date }. Sets don't survive JSON, so serializeGardens turns
+// members into an array; deserializeGardens turns it back into a Set.
+// Gardens from a previous day are dropped on load — the garden is daily,
+// so yesterday's plants never come back after a restart.
+function serializeGardens(store) {
+  const out = {};
+  for (const [gid, g] of store) {
+    out[String(gid)] = {
+      title: g.title || '',
+      members: Array.from(g.members || []),
+      notes: (g.notes || []).map((n) => ({ id: String(n.id), userId: n.userId, plant: String(n.plant || ''), text: String(n.text || ''), time: String(n.time || ''), date: String(n.date || '') })),
+      date: String(g.date || ''),
+    };
+  }
+  return out;
+}
+
+function deserializeGardens(raw) {
+  const store = createGardenStore();
+  if (!raw || typeof raw !== 'object') return store;
+  for (const [gid, g] of Object.entries(raw)) {
+    if (!g || typeof g !== 'object') continue;
+    const garden = getGarden(store, gid);
+    garden.title = String(g.title || '');
+    garden.members = new Set(Array.isArray(g.members) ? g.members : []);
+    garden.notes = (Array.isArray(g.notes) ? g.notes : []).map((n) => ({ id: String(n.id), userId: n.userId, plant: String(n.plant || ''), text: String(n.text || ''), time: String(n.time || ''), date: String(n.date || '') }));
+    garden.date = String(g.date || '');
+    // Prune notes whose date isn't the garden's own day (self-consistent,
+    // timezone-independent). The day boundary itself is handled by the
+    // readers: GET /api/garden and /sharerecap roll the garden to the
+    // reader's/asker's day before returning it, so a garden loaded from
+    // yesterday is cleared on first read today, not served stale.
+    pruneGarden(garden);
+  }
+  return store;
+}
+
+module.exports = { createGardenStore, getGarden, rolloverGarden, pruneGarden, addGardenNote, updateMemberPlant, serializeGardens, deserializeGardens };

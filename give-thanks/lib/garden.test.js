@@ -3,7 +3,7 @@
 // note id, and the garden resets when a new day arrives (dab, 2026-11-17:
 // "let's just have the garden reset every day").
 const assert = require('assert');
-const { createGardenStore, getGarden, rolloverGarden, pruneGarden, addGardenNote, updateMemberPlant } = require('./garden');
+const { createGardenStore, getGarden, rolloverGarden, pruneGarden, addGardenNote, updateMemberPlant, serializeGardens, deserializeGardens } = require('./garden');
 
 const store = createGardenStore();
 const gid = '-100123';
@@ -67,4 +67,36 @@ assert.strictEqual(g2.notes[0].plant, 'mango', 'the member’s note now shows th
 assert.strictEqual(g2.notes[1].plant, 'apple', 'other members’ notes are untouched');
 assert.strictEqual(updateMemberPlant(g2, 999, 'rose'), 0, 'a member with no notes updates nothing');
 
-console.log('garden: all garden store tests pass (shareable only, dedup, daily reset, plant on note)');
+// v5.9: save the garden to disk — MULTIPLE gardens, one per group, all
+// preserved. Serialize to JSON, deserialize back, and the gardens come
+// back identical (members as a Set again, notes with their plants).
+const store3 = createGardenStore();
+addGardenNote(store3, '-100123', 111, { id: 'm-1', text: 'soup', time: '09:00', shareable: true, date: today, plant: 'mango' });
+addGardenNote(store3, '-100123', 222, { id: 'm-2', text: 'walk', time: '10:00', shareable: true, date: today, plant: 'mushroom' });
+addGardenNote(store3, '-100456', 333, { id: 'm-3', text: 'sun', time: '11:00', shareable: true, date: today, plant: 'apple' });
+getGarden(store3, '-100123').title = 'Family Chat';
+getGarden(store3, '-100456').title = 'Work Friends';
+const json = JSON.stringify(serializeGardens(store3));
+const restored = deserializeGardens(JSON.parse(json));
+assert.strictEqual(restored.size, 2, 'both gardens survive a save/load round-trip');
+const r1 = restored.get('-100123');
+assert.strictEqual(r1.title, 'Family Chat', 'the garden title survives');
+assert.ok(r1.members instanceof Set, 'members come back as a Set');
+assert.ok(r1.members.has(111) && r1.members.has(222), 'both members survive');
+assert.strictEqual(r1.notes.length, 2, 'both notes survive');
+assert.strictEqual(r1.notes[0].plant, 'mango', 'the mango note keeps its plant');
+assert.strictEqual(r1.notes[1].plant, 'mushroom', 'the mushroom note keeps its plant');
+assert.strictEqual(r1.date, today, 'the garden date survives');
+const r2 = restored.get('-100456');
+assert.strictEqual(r2.title, 'Work Friends', 'the second garden survives too');
+assert.strictEqual(r2.notes[0].plant, 'apple', 'the second garden’s note survives');
+// A garden with no notes still round-trips (the group is still known).
+const store4 = createGardenStore();
+getGarden(store4, '-100789').title = 'Empty Group';
+assert.strictEqual(deserializeGardens(JSON.parse(JSON.stringify(serializeGardens(store4)))).get('-100789').title, 'Empty Group', 'an empty garden survives');
+// Garbage in, empty store out — a corrupt file must never crash startup.
+assert.strictEqual(deserializeGardens(null).size, 0, 'null input gives an empty store');
+assert.strictEqual(deserializeGardens('nope').size, 0, 'a non-object gives an empty store');
+assert.strictEqual(deserializeGardens({}).size, 0, 'an empty object gives an empty store');
+
+console.log('garden: all garden store tests pass (shareable only, dedup, daily reset, plant on note, save/load)');
