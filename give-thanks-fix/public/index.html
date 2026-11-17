@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Give Thanks 🌱</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800;900&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<script src="themes.js?v=20261117k"></script>
+<link rel="stylesheet" href="style.css?v=20261117k">
+</head>
+<body>
+<div id="loadingCover" class="loading-cover">
+  <div class="loading-plant" id="loadingPlant">🌱</div>
+  <div class="loading-title">GIVE THANKS</div>
+  <div class="loading-sub">Growing your thanks…</div>
+</div>
+<div id="app">
+  <header>
+    <div class="logo">🌱 GIVE THANKS</div>
+    <div class="date" id="todayDate">—</div>
+  </header>
+  <!-- COUNTER -->
+  <section id="tab-counter" class="tab active">
+    <div class="counter-card">
+      <div class="stage" id="plantStage">JUST SPROUTED</div>
+      <div class="plant" id="plant" aria-hidden="true">🌱</div>
+      <div class="count" id="count">0</div>
+      <div class="count-label"><span id="countLabel">thanks today</span></div>
+    </div>
+    <button id="pressBtn" class="press-btn" type="button">+ thanks</button>
+    <button id="undoBtn" class="undo-btn" type="button" style="display:none">↩ Undo last press</button>
+    <div class="note-row">
+      <input id="noteInput" maxlength="140" placeholder="What are you thankful for? (optional)" autocomplete="off">
+      <button id="addNoteBtn" class="small-btn" type="button">Add note</button>
+    </div>
+    <p class="hint">Press once per thanks. Add a note if you like. No streaks, no pressure.</p>
+    <h3 class="list-heading">Today's list <span class="list-note">tick = shareable · unticked = blurred out · × deletes that thanks</span></h3>
+    <ul id="notesList" class="notes"></ul>
+    <button id="goShareBtn" class="small-btn share-btn" type="button">Share today ↗</button>
+    <button id="sendRecapBtn" class="small-btn recap-btn" type="button">Send today's recap to chat</button>
+    <p class="sync" id="recapStatus">Sends your list to your 1:1 chat with the bot, any time</p>
+    <p class="sync" id="syncStatus">Saved on this device</p>
+  </section>
+
+  <!-- GARDEN — parked for v1: the tab stays, the content is blurred out
+       with a "we're still working on this!" card on top. -->
+  <section id="tab-garden" class="tab">
+    <h2>🌸 The Garden</h2>
+    <div class="garden-soon">
+      <div class="garden-blur">
+        <p class="calm">Anonymous, opt-in. Each thanks adds a flower. No names, no likes, no ranking.</p>
+        <label class="toggle"><input type="checkbox" id="gardenOptIn"> Join the personal garden</label>
+        <div class="garden-field" id="gardenField">🌱 Your garden is waiting for its first thanks today.</div>
+        <p class="calm" id="gardenCount">0 flowers bloomed today</p>
+      </div>
+      <div class="garden-soon-card">🌱<br>we're still working on this!</div>
+    </div>
+  </section>
+
+  <!-- SHARE -->
+  <section id="tab-share" class="tab">
+    <h2>↗ Share today</h2>
+    <p class="calm">Tick “share” on a note to include it. Unticked notes are blurred out. This shares <b>outside Telegram</b> — pick WhatsApp, Instagram, Messages, etc. from your phone's share sheet.</p>
+    <div id="sharePreview" class="share-preview"></div>
+    <button id="shareMessageBtn" class="small-btn" type="button">Share as message</button>
+    <button id="shareArtBtn" class="small-btn" type="button">Share as art page (image)</button>
+    <button id="copyShareBtn" class="small-btn" type="button">Copy text</button>
+    <p class="fine" id="artStatus"></p>
+    <img id="artPreview" alt="Your Give Thanks art page" style="display:none; width:100%; border-radius:12px; margin-top:8px;">
+    <p class="fine">Private notes are never included as text. They appear as blurred blocks. Your Telegram ID, name, garden data and settings are never shared.</p>
+  </section>
+
+  <!-- ABOUT: the text itself comes from /api/about. Edit instructions are
+       owner-only and live in Telegram (/edit_about, 1:1 chat) and in
+       HOW_TO_BUILD.md — nothing about editing is shown in this tab. -->
+  <section id="tab-about" class="tab">
+    <div id="aboutContent"></div>
+    <p class="fine">Educational only, not medical advice. If you're struggling, consider talking to a clinician or a trusted person.</p>
+  </section>
+
+  <nav class="tabs">
+    <button data-tab="counter" class="active" type="button">🌱 Counter</button>
+    <button data-tab="garden" type="button">🌸 Garden</button>
+    <button data-tab="share" type="button">↗ Share</button>
+    <button data-tab="about" type="button">📋 About</button>
+  </nav>
+</div>
+<script src="app.js?v=20261117k"></script>
+</body>
+</html>
