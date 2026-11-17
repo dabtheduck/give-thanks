@@ -340,11 +340,13 @@ bot.command('share', async (ctx) => {
 });
 
 bot.command('garden', async (ctx) => {
-  // Grow a garden for this group: one plant per shared thanks, tap a
-  // plant to read its note. Group only. The bot replies with a button
-  // to open the garden, plus the plain link as a fallback — a bad button
-  // URL can fail the whole send silently (2026-11-17), so the link is
-  // the safety net.
+  // Welcome everyone to this group's garden (dab, 2026-11-17): one plant
+  // per shared thanks, tap a plant to read its note. Group only. The bot
+  // replies with a button to open the garden, plus the plain link as a
+  // fallback — a bad button URL can fail the whole send silently
+  // (2026-11-17), so the link is the safety net. Clicking the link
+  // creates the garden for this group (members = only this group's
+  // people, checked on every open) and adds it to the opener's 1:1 app.
   if (ctx.chat.type === 'private') return ctx.reply('Run /garden in a group chat to grow a garden with its members.');
   const gid = String(ctx.chat.id);
   const g = getGarden(gardens, gid);
@@ -353,13 +355,25 @@ bot.command('garden', async (ctx) => {
   const u = getUser(ctx.from.id, ctx.chat.id);
   if (!u.groupGardens.includes(gid)) { u.groupGardens.push(gid); saveSettings(); }
   const url = MINI_APP_URL + '?startapp=garden_' + gid;
-  const text = `🌸 ${g.title} — group garden\n\nOne plant per shared thanks. Tap a plant to read its note. Only members of this group can see it, and only thanks with the share box ticked show up.\n\nPick your plant when you open it — that’s how the group tells you apart.`;
+  const text = `🌸 Welcome to the ${g.title} garden!\n\nThis is our group's shared garden. Here's how it grows:\n\n• Press + thanks in the Give Thanks app and tick share on a note — it grows here as a plant.\n• Pick your plant when you open it — that's how the group tells you apart (no names, just plants).\n• Tap any plant to read its thanks.\n• Only people in this group can see it, and it resets every day at 03:00.\n\nThe garden also shows up in your 1:1 Give Thanks app, under the Garden tab — no need to come back to this link.`;
   try {
     await ctx.reply(text, Markup.inlineKeyboard([[Markup.button.webApp('🌱 Open the group garden', url)]]));
   } catch (e) {
     console.error('garden button failed, sending plain link', e.message);
     await ctx.reply(text + '\n\n' + url);
   }
+});
+
+// When the bot is added to a group, say hello and point to /garden —
+// that's the welcome that starts a group's garden (dab, 2026-11-17).
+bot.on('my_chat_member', async (ctx) => {
+  try {
+    const upd = ctx.update && ctx.update.my_chat_member;
+    if (!upd || upd.chat.type === 'private') return;
+    const newStatus = upd.new_chat_member && upd.new_chat_member.status;
+    if (newStatus !== 'member' && newStatus !== 'administrator') return;
+    await ctx.reply('🌱 Hi everyone! I’m Give Thanks — press + thanks in the app, tag a note, and your day grows a little garden.\n\nTo grow a shared garden for this group, type /garden. One plant per shared thanks, tap a plant to read its note, and only this group can see it.');
+  } catch (e) { /* a failed hello must never break the bot */ }
 });
 
 bot.command('sharerecap', async (ctx) => {
@@ -493,7 +507,7 @@ const app = express();
 app.use(express.json({ limit: '200kb' }));
 // No-store for app assets: the live counter once stayed broken because browsers /
 // Telegram WebView kept serving a cached pre-fix app.js after a redeploy.
-// (index.html also loads app.js/style.css/themes.js with ?v=20261117p.)
+// (index.html also loads app.js/style.css/themes.js with ?v=20261117q.)
 app.use(express.static(path.join(__dirname, 'public'), {
   maxAge: 0, etag: false,
   setHeaders(res, filePath) { if (/\.(js|css|html)$/.test(filePath)) res.set('Cache-Control', 'no-store'); },

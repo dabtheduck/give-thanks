@@ -8,8 +8,8 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800;900&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
-<script src="themes.js?v=20261117p"></script>
-<link rel="stylesheet" href="style.css?v=20261117p">
+<script src="themes.js?v=20261117q"></script>
+<link rel="stylesheet" href="style.css?v=20261117q">
 </head>
 <body>
 <div id="loadingCover" class="loading-cover">
@@ -52,11 +52,14 @@
     <div id="groupGarden">
       <h3 id="groupGardenTitle">Group garden</h3>
       <p class="calm" id="groupGardenStatus">Loading the garden…</p>
+      <p class="calm" id="gardenMyCount"></p>
       <div class="garden-plot" id="groupGardenPlot"></div>
       <p class="calm">Tap a plant to read its thanks. Only shared thanks appear here — no names, just the plant of the person who shared it.</p>
       <h3 class="list-heading">Your plant <span class="list-note">tap one to pick it — this is how the group tells you apart</span></h3>
       <div class="plant-picker" id="plantPicker"></div>
       <p class="calm" id="plantStatus"></p>
+      <h3 class="list-heading">Today’s shared thanks</h3>
+      <ul class="notes" id="gardenRecapList"></ul>
     </div>
     <div id="gardenList" style="display:none"></div>
     <div id="gardenSetup" style="display:none">
@@ -101,6 +104,6 @@
     </div>
   </div>
 </div>
-<script src="app.js?v=20261117p"></script>
+<script src="app.js?v=20261117q"></script>
 </body>
 </html>

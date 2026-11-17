@@ -552,6 +552,23 @@ async function fetchServerState() {
     const res = await fetch('/api/state?initData=' + encodeURIComponent(tg.initData), { signal: ctrl.signal });
     if (!res.ok) return;
     const j = await res.json();
+    // Gardens in the 1:1 app (dab, 2026-11-17): the server learns about a
+    // group garden when someone runs /garden or opens it, but the app
+    // never asked — so the Garden tab in the 1:1 app showed the setup
+    // line instead of the garden. Merge the server's groupGardens into
+    // settings (and save them) so the Garden tab shows the user's
+    // gardens right in the 1:1 Mini App, no group link needed.
+    if (j && j.settings && Array.isArray(j.settings.groupGardens)) {
+      const before = (state.settings.groupGardens || []).map(String);
+      const merged = Array.from(new Set([...before, ...j.settings.groupGardens.map(String)]));
+      if (merged.length !== before.length) {
+        state.settings.groupGardens = merged;
+        saveSettings();
+        // If the Garden tab is showing the setup line, refresh it now
+        // that we know about a garden.
+        renderGardenTab();
+      }
+    }
     const pending = Array.isArray(j.pendingBot) ? j.pendingBot : [];
     if (!pending.length) return;
     let changed = false;
@@ -741,6 +758,27 @@ function renderGardenTab() {
   if (groupGarden.error) { if (status) status.textContent = groupGarden.error; }
   else if (groupGarden.loaded) { if (status) status.textContent = groupGarden.notes.length + ' shared thanks growing here today · ' + groupGarden.memberCount + ' member' + (groupGarden.memberCount === 1 ? '' : 's'); }
   else if (status) status.textContent = 'Loading the garden…';
+  // Link the garden to the personal counter (dab, 2026-11-17): the garden
+  // used to show 0 and feel disconnected from the 1:1 counter. The count
+  // here is the user's own thanks today, from the same app state.
+  setText('gardenMyCount', 'Your thanks today: ' + state.today.count + (state.today.count === 1 ? ' thanks' : ' thanks') + ' · tick share on a note to plant it here.');
+  // In-app recap: the shared notes as a list, plant + note, tap to read.
+  // This is the shared group recap (dab, 2026-11-17) inside the 1:1 app —
+  // the same list /sharerecap sends to the group chat.
+  const recapList = el('gardenRecapList');
+  if (recapList) {
+    recapList.innerHTML = '';
+    if (groupGarden.loaded && !groupGarden.notes.length) {
+      recapList.innerHTML = '<li class="calm">Nothing shared yet — tick share on a note in the Counter tab and it will grow here.</li>';
+    } else {
+      for (const n of groupGarden.notes) {
+        const li = document.createElement('li');
+        li.innerHTML = '<span class="garden-recap-plant">' + escapeHtml(n.emoji || '🌱') + '</span> <span class="note-text">' + escapeHtml(n.text || '') + '</span> <span class="list-note">' + escapeHtml(n.plantName || '') + (n.time ? ' · ' + escapeHtml(n.time) : '') + '</span>';
+        li.addEventListener('click', () => openNoteBubble(n));
+        recapList.appendChild(li);
+      }
+    }
+  }
   const plot = el('groupGardenPlot');
   if (plot) {
     plot.innerHTML = '';
@@ -772,8 +810,21 @@ function renderGardenTab() {
       b.textContent = p.emoji;
       b.title = p.name;
       b.setAttribute('aria-label', p.name);
-      b.addEventListener('click', () => pickPlant(p.id));
+      b.dataset.plant = p.id;
       picker.appendChild(b);
+    }
+    // One delegated listener on the container, attached once (not a
+    // per-button listener that gets rebuilt with the buttons). Taps on a
+    // flower used to do literally nothing (dab, 2026-11-17) — a rebuilt
+    // button can swallow the tap, and a missing initData made pickPlant
+    // return silently. Delegation survives re-renders, and pickPlant now
+    // says so instead of failing silently.
+    if (!picker.dataset.bound) {
+      picker.dataset.bound = '1';
+      picker.addEventListener('click', (e) => {
+        const t = e.target && e.target.closest ? e.target.closest('[data-plant]') : null;
+        if (t && t.dataset.plant) pickPlant(t.dataset.plant);
+      });
     }
   }
   updatePlantStatus();
@@ -811,7 +862,12 @@ function updatePlantStatus() {
 function setPlantStatus(msg) { plantStatusMsg = msg || ''; updatePlantStatus(); }
 
 async function pickPlant(plantId) {
-  if (!tg || !tg.initData) return;
+  if (!tg || !tg.initData) {
+    // Never fail silently — a tap that does nothing looks broken (dab,
+    // 2026-11-17). Without initData the server can't confirm membership.
+    setPlantStatus('Couldn’t save your plant — open the garden from Telegram, not a browser link.');
+    return;
+  }
   const prev = groupGarden.myPlant;
   groupGarden.myPlant = plantId;
   renderGardenTab();

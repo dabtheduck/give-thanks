@@ -78,6 +78,7 @@ h3{font-family:"Space Mono","Courier New",monospace;margin:0 0 8px;font-size:16p
 .note-empty{color:var(--stone);font-style:italic}
 .note-edit-input{width:100%;padding:10px;border:1px solid var(--forest);border-radius:10px;background:#fff;font-size:15px;font-family:inherit}
 .garden-open-btn{display:block;width:100%;padding:12px;margin:8px 0;background:var(--card);border:1px solid var(--line);border-radius:12px;font-size:15px;cursor:pointer;text-align:left}
+.garden-recap-plant{font-size:18px;margin-right:2px}
 .delete-note:hover{color:#B3261E;background:#FBEDEA}
 .share-check input{accent-color:var(--forest)}
 .private-note{filter:blur(1px);opacity:.65}
