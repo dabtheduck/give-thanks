@@ -146,7 +146,7 @@ No long-term history database. No passwords. No email.
 
 ### 6.3 Why a temporary server store is needed
 CloudStorage is client-only: only the Mini App JS can read/write it. The bot server cannot read it via the Bot API. So the app also syncs a copy to the server:
-- On each press, the Mini App saves to CloudStorage (source of truth on device), AND POSTs a lightweight sync to `/api/sync` with validated Telegram `initData`.
+- On each press, the Mini App saves to CloudStorage (source of truth on device), AND POSTs a lightweight sync to `/api/sync` with validated Telegram `initData`. Saves are queued one at a time, in order (v5.4 — concurrent saves let an old count overwrite a newer one). The meta carries `savedAt`; on load the app reads the meta from both CloudStorage and localStorage and uses the fresher one. Stale note chunks are cleared on save and trimmed on load.
 - The server copy exists for `/recap` in chat, for merging `/thanks` logged in the bot chat into the app's counter on next open, and for feeding group gardens. The on-demand recap button does not need it — it POSTs the app’s own list to `/api/recap` and the server just delivers it.
 - The server store is ephemeral: in the MVP code it is an in-memory map + a `data.json` for settings only, with today's notes held in memory and overwritten by the next sync (a restart wipes it; the app re-syncs on open). In production, use a KV with TTL 36 hours (e.g. Cloudflare KV, Upstash Redis). Never store past days.
 - v1 has no scheduler (removed 2026-11-17): nothing on the server fires on a clock. The 03:00 reset is app-side (the day key changes), and a wake-up ping at 02:55 keeps the server awake around the reset so the app’s first sync of the new day is fast.

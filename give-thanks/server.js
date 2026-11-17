@@ -16,7 +16,14 @@
 // new things. No group posts.
 // v5.3 (2026-11-17): bare +thanks presses are list items (editable
 // later); plant picker fixed + random fallback plant that sticks;
-// personal garden deleted — gardens are group-only.
+// personal garden deleted — gardens are group-only. Dates shown as
+// DD-MM-YYYY (stored as YYYY-MM-DD).
+// v5.4 (2026-11-17): counter fix — saves are queued one at a time (an
+// old count overwrote a newer one), the meta carries savedAt and load
+// picks the fresher of CloudStorage/localStorage, stale note chunks are
+// cleared on save and trimmed on load, and presses made while the app is
+// still loading fold on top of the stored count instead of being wiped
+// by it. See UPGRADES.md §13.
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
@@ -486,7 +493,7 @@ const app = express();
 app.use(express.json({ limit: '200kb' }));
 // No-store for app assets: the live counter once stayed broken because browsers /
 // Telegram WebView kept serving a cached pre-fix app.js after a redeploy.
-// (index.html also loads app.js/style.css/themes.js with ?v=20261117n.)
+// (index.html also loads app.js/style.css/themes.js with ?v=20261117p.)
 app.use(express.static(path.join(__dirname, 'public'), {
   maxAge: 0, etag: false,
   setHeaders(res, filePath) { if (/\.(js|css|html)$/.test(filePath)) res.set('Cache-Control', 'no-store'); },

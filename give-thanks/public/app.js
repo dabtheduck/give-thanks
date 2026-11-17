@@ -142,26 +142,70 @@ try { state.gardenId = new URLSearchParams(location.search).get('startapp') ? ne
 function withTimeout(promise, ms) {
   return Promise.race([promise, new Promise((resolve) => setTimeout(() => resolve('__TIMEOUT__'), ms))]);
 }
-function csGet(key) {
-  if (!cs) { try { return Promise.resolve(localStorage.getItem(key)); } catch (e) { return Promise.resolve(null); } }
+// ---- Storage: Telegram CloudStorage + localStorage, kept in sync ----
+// COUNTER BUG (dab, 2026-11-17: "my counter keeps getting stuck on 75"):
+// The app used to write to localStorage (sync) and CloudStorage (async,
+// up to 500ms) on every press, with a new save fired on each press — so
+// several saves ran at once and their CloudStorage writes finished OUT
+// OF ORDER, leaving an old count (75) in CloudStorage after a newer one
+// (74) was saved. And csGet read CloudStorage first and used whatever it
+// found, even when localStorage held the newer value — or returned null
+// when CloudStorage had no key at all, even though localStorage had the
+// data (so the app reset to 0 and /thanks looked like it wiped the day).
+// Fix, three parts:
+//   1. Saves run ONE AT A TIME, in order (a queue), and each writes the
+//      CURRENT state, so the last save to finish always has the latest
+//      count. No more out-of-order CloudStorage writes.
+//   2. The meta carries savedAt. On load, the app reads the meta from
+//      BOTH stores and uses the fresher one, then reads the note chunks
+//      from that same store — so a stale CloudStorage can never override
+//      a newer localStorage, and vice versa.
+//   3. Stale note chunks are cleared on save (a shrink used to leave the
+//      old chunk behind, so deleted notes came back), and on load the
+//      notes are deduped by id and trimmed to the count, which heals
+//      storage that already went stale.
+// localStorage is the reliable copy on this device (written synchronously,
+// always first); CloudStorage is the per-user store that survives a
+// reinstall and works across devices.
+function localGet(key) { try { return localStorage.getItem(key); } catch (e) { return null; } }
+function localSet(key, val) { try { localStorage.setItem(key, val); } catch (e) {} }
+function cloudGet(key) {
+  if (!cs) return Promise.resolve(null);
   const p = new Promise((resolve) => {
     try { cs.getItem(key, (err, v) => resolve(err ? null : v)); }
     catch (e) { resolve(null); }
   });
-  return withTimeout(p, CS_TIMEOUT_MS).then((v) => {
-    if (v === '__TIMEOUT__') { try { return localStorage.getItem(key); } catch (e) { return null; } }
-    return v;
-  });
+  return withTimeout(p, CS_TIMEOUT_MS).then((v) => (v === '__TIMEOUT__' ? null : v));
 }
-function csSet(key, val) {
-  // Always write localStorage too, so a CloudStorage hang never loses data.
-  try { localStorage.setItem(key, val); } catch (e) {}
+function cloudSet(key, val) {
   if (!cs) return Promise.resolve(true);
   const p = new Promise((resolve) => {
     try { cs.setItem(key, val, (err, ok) => resolve(!err && ok)); }
     catch (e) { resolve(false); }
   });
   return withTimeout(p, CS_TIMEOUT_MS).then((v) => v !== '__TIMEOUT__');
+}
+// Write to both stores, local first (sync, reliable), then CloudStorage.
+// Returns true if at least the local write landed.
+async function storeSet(key, val) {
+  localSet(key, val);
+  try { await cloudSet(key, val); } catch (e) {}
+  return true;
+}
+// Read from both stores; CloudStorage first, but fall back to localStorage
+// whenever CloudStorage has nothing (not just on a timeout) — a write
+// that timed out can leave the key unset there while localStorage has it.
+async function csGet(key) {
+  const cloud = await cloudGet(key);
+  if (cloud !== null && cloud !== undefined) return cloud;
+  return localGet(key);
+}
+function csSet(key, val) {
+  // Fire-and-forget for settings/about (the today saver has its own
+  // queued path below). Always write localStorage too, so a CloudStorage
+  // hang never loses data.
+  localSet(key, val);
+  return cloudSet(key, val);
 }
 
 // ---- About / Bulletin Board ----
@@ -266,13 +310,48 @@ function rolloverIfNeeded() {
   return true;
 }
 async function loadToday() {
+  // Snapshot before the first await: the + thanks button is live while
+  // this load runs, so a press made during init is a delta to fold on top
+  // of the stored count — never wiped by it (dab, 2026-11-17: presses made
+  // just after opening the app vanished when the stored count landed).
+  const snapCount = state.today.count;
+  const snapNotesLen = (state.today.notes || []).length;
+  const snapHistLen = Array.isArray(state.pressHistory) ? state.pressHistory.length : 0;
+  const snapAdopted = Array.isArray(state.adoptedBotIds) ? state.adoptedBotIds.slice() : [];
   try {
-    const meta = await csGet('gt_today_meta');
+    // Read the meta from BOTH stores and use the fresher one (by savedAt).
+    // CloudStorage can hold a stale count after an out-of-order write, and
+    // localStorage can hold the newer one — or vice versa. Whichever is
+    // newer wins; the note chunks are then read from that same store, so
+    // the count and the notes stay consistent with each other.
+    const [metaCloud, metaLocal] = await Promise.all([cloudGet('gt_today_meta'), Promise.resolve(localGet('gt_today_meta'))]);
+    let meta = null, useCloud = true;
+    const parseMeta = (s) => { try { const o = JSON.parse(s); return (o && typeof o === 'object') ? o : null; } catch (e) { return null; } };
+    const mc = metaCloud ? parseMeta(metaCloud) : null;
+    const ml = metaLocal ? parseMeta(metaLocal) : null;
+    if (mc && ml) {
+      const mcAt = Number(mc.savedAt || 0), mlAt = Number(ml.savedAt || 0);
+      // The one saved later wins. On a tie — or when neither has a savedAt
+      // (data saved before this fix) — prefer localStorage: every save
+      // writes it synchronously first, so on this device it is always at
+      // least as fresh as CloudStorage, whose writes can lag or time out.
+      if (mcAt !== mlAt) useCloud = mcAt > mlAt;
+      else useCloud = false;
+      meta = useCloud ? metaCloud : metaLocal;
+    }
+    else if (mc) { useCloud = true; meta = metaCloud; }
+    else if (ml) { useCloud = false; meta = metaLocal; }
     if (meta) {
       try {
         const rawMeta = JSON.parse(meta);
         const m = migrateToday(rawMeta);
         const storedDate = m.date;
+        // Presses made while this load was running (snapshot at the top):
+        // capture the delta before the stored values overwrite it.
+        const deltaCount = state.today.count - snapCount;
+        const deltaNotes = (state.today.notes || []).slice(snapNotesLen);
+        const deltaHist = (Array.isArray(state.pressHistory) ? state.pressHistory : []).slice(snapHistLen);
+        const deltaAdopted = (Array.isArray(state.adoptedBotIds) ? state.adoptedBotIds : []).filter((id) => !snapAdopted.includes(id));
         state.today.count = m.count || 0;
         // Restore undo history if this install saved it; otherwise mark it
         // to be rebuilt from the notes once they finish loading below.
@@ -284,14 +363,25 @@ async function loadToday() {
         if (Array.isArray(rawMeta.adoptedBotIds)) state.adoptedBotIds = rawMeta.adoptedBotIds.map(String);
         else state.adoptedBotIds = [];
         state.today.notes = [];
+        const readChunk = useCloud ? cloudGet : (k) => Promise.resolve(localGet(k));
+        let chunksRead = 0;
         for (let i = 1; i <= 10; i++) {
-          const chunk = await csGet('gt_today_notes_' + i);
+          const chunk = await readChunk('gt_today_notes_' + i);
           if (!chunk) break;
+          chunksRead = i;
           try { state.today.notes.push.apply(state.today.notes, JSON.parse(chunk)); } catch (e) {}
         }
+        lastChunkCount = chunksRead;
         // Old installs saved notes without ids — give them stable ones so
         // the merge and the garden can tell notes apart.
         state.today.notes = state.today.notes.map(n => ({ text: String(n.text || '').slice(0, 140), time: String(n.time || ''), shareable: typeof n.shareable === 'boolean' ? n.shareable : false, id: String(n.id || stableNoteId(n.text, n.time)), origin: n.origin === 'bot' ? 'bot' : 'app' }));
+        // Heal stale storage: a shrink used to leave an old chunk behind,
+        // so deleted notes came back on the next load. Notes are deduped by
+        // id, and the list can never hold more notes than presses — trim
+        // the extras (they are the stale tail of an old chunk).
+        const seenIds = new Set();
+        state.today.notes = state.today.notes.filter((n) => { if (seenIds.has(n.id)) return false; seenIds.add(n.id); return true; });
+        if (state.today.notes.length > state.today.count) state.today.notes = state.today.notes.slice(0, state.today.count);
         if (state.pressHistory === null) {
           // Old install, no saved history: notes first, count-only presses
           // last, so an undo after reload takes a bare press off before
@@ -299,6 +389,24 @@ async function loadToday() {
           const bare = Math.max(0, state.today.count - state.today.notes.length);
           state.pressHistory = state.today.notes.map(() => true).concat(Array(bare).fill(false));
         }
+        // Fold in presses made while this load was running: they sit on
+        // top of the stored count (a press during init adds one; an undo
+        // or delete during it takes one off the end). Without this, a
+        // fast press just after opening the app was wiped when the stored
+        // count landed — the same "counter reverts" the user sees.
+        if (deltaCount > 0) {
+          state.today.count += deltaCount;
+          state.today.notes.push(...deltaNotes);
+          state.pressHistory.push(...deltaHist);
+          for (const id of deltaAdopted) if (!state.adoptedBotIds.includes(id)) state.adoptedBotIds.push(id);
+        } else if (deltaCount < 0) {
+          const drop = -deltaCount;
+          state.today.count = Math.max(0, state.today.count - drop);
+          state.today.notes.splice(Math.max(0, state.today.notes.length - drop), drop);
+          state.pressHistory.splice(Math.max(0, state.pressHistory.length - drop), drop);
+        }
+        if (state.today.notes.length > state.today.count) state.today.notes = state.today.notes.slice(0, state.today.count);
+        if (state.pressHistory.length > state.today.count) state.pressHistory = state.pressHistory.slice(0, state.today.count);
         // The stored bucket may be yesterday's (app left open across
         // 03:00). Keep its date, then roll over — rescuing any presses
         // made after 03:00 — instead of wiping them.
@@ -311,15 +419,25 @@ async function loadToday() {
         // a redeploy or a failed sync.
         await fetchServerState();
         syncToServer();
+        // If today's data came from localStorage (it was fresher than
+        // CloudStorage), push it back to CloudStorage so the two stores
+        // agree again — otherwise the stale CloudStorage value lingers.
+        if (!useCloud) saveTodayBackground();
         return;
       } catch (e) {
         showError("Couldn't load the new bits, your thanks are safe");
       }
     }
   } catch (e) { /* keep defaults, never crash */ }
-  state.today = { version: DATA_VERSION, date: state.today.date, count: 0, notes: [] };
-  state.pressHistory = [];
-  state.adoptedBotIds = [];
+  // No stored day (fresh install, or a corrupt meta): start at 0 — unless
+  // the user pressed while this load was running, in which case keep those
+  // presses instead of wiping them (see the snapshot at the top).
+  if (state.today.count === snapCount && (state.today.notes || []).length === snapNotesLen) {
+    state.today = { version: DATA_VERSION, date: state.today.date, count: 0, notes: [] };
+    state.pressHistory = [];
+    state.adoptedBotIds = [];
+    lastChunkCount = 0;
+  }
   saveTodayBackground();
   render();
   // Even a fresh install may have /thanks waiting on the server (typed in
@@ -327,23 +445,36 @@ async function loadToday() {
   await fetchServerState();
   syncToServer();
 }
+// How many note chunks were last written (so a shrink can clear the old
+// ones). Reset on load to however many chunks were actually read.
+let lastChunkCount = 0;
 function saveTodayBackground() {
-  // Fire-and-forget: the UI already updated. A slow/failed save must never
-  // roll back or hide the count.
-  (async () => {
-    try {
-      await csSet('gt_today_meta', JSON.stringify({ version: DATA_VERSION, date: state.today.date, count: state.today.count, pressHistory: state.pressHistory, adoptedBotIds: state.adoptedBotIds }));
-      const chunks = []; let cur = [];
-      for (const n of state.today.notes) {
-        const test = cur.concat([n]);
-        if (JSON.stringify(test).length > 3800) { chunks.push(cur); cur = [n]; } else cur = test;
-      }
-      if (cur.length) chunks.push(cur);
-      for (let i = 0; i < Math.max(chunks.length, 1); i++) {
-        await csSet('gt_today_notes_' + (i + 1), JSON.stringify(chunks[i] || []));
-      }
-    } catch (e) { /* localStorage already has it; keep going */ }
-  })();
+  // Queued, one save at a time, in order — see the storage comment above.
+  // Each save writes the CURRENT state (not a snapshot), so the last save
+  // to finish always has the latest count. Fire-and-forget: the UI already
+  // updated, and a slow/failed save must never roll back the count.
+  saveChain = saveChain.then(() => saveTodayNow()).catch(() => {});
+}
+let saveChain = Promise.resolve();
+async function saveTodayNow() {
+  try {
+    const chunks = []; let cur = [];
+    for (const n of state.today.notes) {
+      const test = cur.concat([n]);
+      if (JSON.stringify(test).length > 3800) { chunks.push(cur); cur = [n]; } else cur = test;
+    }
+    if (cur.length) chunks.push(cur);
+    await storeSet('gt_today_meta', JSON.stringify({ version: DATA_VERSION, date: state.today.date, count: state.today.count, pressHistory: state.pressHistory, adoptedBotIds: state.adoptedBotIds, chunkCount: chunks.length, savedAt: Date.now() }));
+    for (let i = 0; i < Math.max(chunks.length, 1); i++) {
+      await storeSet('gt_today_notes_' + (i + 1), JSON.stringify(chunks[i] || []));
+    }
+    // The notes shrank: clear the old chunks beyond the new count, in both
+    // stores, so deleted notes can't come back on the next load.
+    for (let i = chunks.length + 1; i <= lastChunkCount; i++) {
+      await storeSet('gt_today_notes_' + i, '');
+    }
+    lastChunkCount = Math.max(chunks.length, 1);
+  } catch (e) { /* localStorage already has it; keep going */ }
 }
 async function loadSettings() {
   try {
