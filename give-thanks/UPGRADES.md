@@ -126,6 +126,14 @@ Commands (`/thanks`, `/share`, `/garden`, `/sharerecap`, `/seegardens`, `/recap`
 - No version bump (data stays v5, cache bust v20261117t): `archivedGardens` and `gardenTitles` are additive fields; old records default to empty.
 - Test: `garden-v55.test.js` now covers v5.5 + v5.6 — list rows labelled with group names (no generic "Open group garden"), tap a row to open it, back button returns to the list, reorder changes the stored order and the rendered order, archive moves a garden to the archived section and restore brings it back, delete removes it from both lists and the row leaves the list, plus the picker, recap and t.me deep-link cases. All pass; all lib tests pass.
 
+### 17. v5.7 example: /help, Counter tab cleanup, and dab's About (2026-11-17)
+- The requests (dab, 2026-11-17 ~18:07 SGT): add a `/help` command as a manual of how the app works; clean up the Counter tab; make dab's WELCOME text the default About.
+- `/help`: a new bot command (in both the 1:1 and group menus) that replies with a chat-friendly manual — counting, notes, the 03:00 reset and saving via recap, sharing (tick = shareable), group gardens, and the command list. It works in 1:1 and in groups.
+- Counter tab cleanup: the "Press once per thanks. Add a note if you like. No streaks, no pressure." hint line is removed; the "tick = shareable · unticked = blurred out · × deletes that thanks" line is now its own paragraph below the "Today's list" heading (was inline in the heading); the "Sends your list to your 1:1 chat with the bot, any time" line is removed — the `#recapStatus` element stays (empty) so the recap button can still show "Sending…"/"Sent"/error feedback when tapped; "Share today" becomes "Share with friends" (the Counter tab button and the Share tab heading; the tab bar stays "↗ Share").
+- About: `public/content/about.md` is now dab's WELCOME text verbatim (the JB day-trip / Mr DIY ring-counter story, why count thanks, how to use the Mini App, and the 03:00 reset notes). Verified via `GET /api/about` returning the new text. Note: `/edit_about` still overwrites this on the running server, and a redeploy reverts it to what's in GitHub — so the new text lives in GitHub (in this zip) to survive redeploys.
+- No version bump (data stays v5, cache bust v20261117u): a new command, HTML text changes, and a content file.
+- Test: all lib tests pass; the garden jsdom test passes; the live smoke test confirms `/health` ok, `/api/about` serves the new WELCOME text, and the index has "Share with friends".
+
 ## Adding a feature in v2.0 — checklist
 1. Add the flag to `lib/features.js`, default off.
 2. Add one file under `lib/` or `features/`. Do not edit the counter or recap core.

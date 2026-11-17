@@ -8,8 +8,8 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800;900&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
-<script src="themes.js?v=20261117t"></script>
-<link rel="stylesheet" href="style.css?v=20261117t">
+<script src="themes.js?v=20261117u"></script>
+<link rel="stylesheet" href="style.css?v=20261117u">
 </head>
 <body>
 <div id="loadingCover" class="loading-cover">
@@ -36,12 +36,12 @@
       <input id="noteInput" maxlength="140" placeholder="What are you thankful for? (optional)" autocomplete="off">
       <button id="addNoteBtn" class="small-btn" type="button">Add note</button>
     </div>
-    <p class="hint">Press once per thanks. Add a note if you like. No streaks, no pressure.</p>
-    <h3 class="list-heading">Today's list <span class="list-note">tick = shareable · unticked = blurred out · × deletes that thanks</span></h3>
+    <h3 class="list-heading">Today's list</h3>
+    <p class="list-note">tick = shareable · unticked = blurred out · × deletes that thanks</p>
     <ul id="notesList" class="notes"></ul>
-    <button id="goShareBtn" class="small-btn share-btn" type="button">Share today ↗</button>
+    <button id="goShareBtn" class="small-btn share-btn" type="button">Share with friends ↗</button>
     <button id="sendRecapBtn" class="small-btn recap-btn" type="button">Send today's recap to chat</button>
-    <p class="sync" id="recapStatus">Sends your list to your 1:1 chat with the bot, any time</p>
+    <p class="sync" id="recapStatus"></p>
     <p class="sync" id="syncStatus">Saved on this device</p>
   </section>
 
@@ -71,7 +71,7 @@
 
   <!-- SHARE -->
   <section id="tab-share" class="tab">
-    <h2>↗ Share today</h2>
+    <h2>↗ Share with friends</h2>
     <p class="calm">Tick “share” on a note to include it. Unticked notes are blurred out. This shares <b>outside Telegram</b> — pick WhatsApp, Instagram, Messages, etc. from your phone's share sheet.</p>
     <div id="sharePreview" class="share-preview"></div>
     <button id="shareMessageBtn" class="small-btn" type="button">Share as message</button>
@@ -105,6 +105,6 @@
     </div>
   </div>
 </div>
-<script src="app.js?v=20261117t"></script>
+<script src="app.js?v=20261117u"></script>
 </body>
 </html>

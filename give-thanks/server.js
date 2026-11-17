@@ -280,6 +280,38 @@ bot.start(async (ctx) => {
     openKeyboard()
   );
 });
+bot.command('help', async (ctx) => {
+  // The manual (dab, 2026-11-17): how the app works, in the chat. Works
+  // in 1:1 and in groups — the group half only applies in a group.
+  await ctx.reply(
+    `🌱 Give Thanks — how it works\n\n` +
+    `This is a counter with a memory. Press it when something good, small or ordinary happens.\n\n` +
+    `COUNTING\n` +
+    `• Open the app (the button below, or the Menu Button) and press “+ thanks” — once per thanks.\n` +
+    `• Add a note if you like (up to 140 characters). Tap a note in Today’s list to edit it later; × deletes that thanks.\n` +
+    `• Or just type /thanks followed by a note right here in chat — it counts the same, and the app picks it up next time you open it.\n\n` +
+    `YOUR DAY\n` +
+    `• Your day runs until 3am. At 3am the counter resets and the notes disappear forever — unless you save them first.\n` +
+    `• Save the list in your 1:1 chat with “Send today’s recap to chat” in the app, or type /recap here.\n\n` +
+    `SHARING\n` +
+    `• Tick the share box on a note to make it shareable. Unticked notes stay private and show as blurred out.\n` +
+    `• The Share tab in the app (“Share with friends”) sends today’s list outside Telegram, as a message or a pixel-art card.\n\n` +
+    `GROUP GARDENS\n` +
+    `• Add me to a group and type /garden there to start that group’s garden. Thanks you tick “share” grow in the garden as plants — one plant per shared thanks, no names.\n` +
+    `• Pick your plant when you open a garden; tap any plant to read its thanks.\n` +
+    `• See your gardens in the 1:1 app, under the Garden tab — or type /seegardens here.\n` +
+    `• /sharerecap in the group posts the group’s shared thanks, each with its plant.\n` +
+    `• Gardens reset at 3am too.\n\n` +
+    `COMMANDS\n` +
+    `• /thanks <note> — log a thanks from chat\n` +
+    `• /recap — save today’s list in this chat\n` +
+    `• /share — today’s shareable list\n` +
+    `• /garden — start or open a group garden (groups only)\n` +
+    `• /sharerecap — the group’s shared thanks (groups only)\n` +
+    `• /seegardens — your group gardens\n\n` +
+    `No streaks. No pressure. Just one quiet habit.`
+  );
+});
 bot.command('recap', async (ctx) => {
   // Everyone in 1:1 (v5 — no longer owner-only, dab 2026-11-17). Reads the
   // server's today, which is ephemeral: a restart wipes it until the app
@@ -521,7 +553,7 @@ const app = express();
 app.use(express.json({ limit: '200kb' }));
 // No-store for app assets: the live counter once stayed broken because browsers /
 // Telegram WebView kept serving a cached pre-fix app.js after a redeploy.
-// (index.html also loads app.js/style.css/themes.js with ?v=20261117t.)
+// (index.html also loads app.js/style.css/themes.js with ?v=20261117u.)
 app.use(express.static(path.join(__dirname, 'public'), {
   maxAge: 0, etag: false,
   setHeaders(res, filePath) { if (/\.(js|css|html)$/.test(filePath)) res.set('Cache-Control', 'no-store'); },
@@ -719,6 +751,7 @@ app.post('/api/garden/plant', async (req, res) => {
 // (owner-only); everyone would see them otherwise.
 const PRIVATE_COMMANDS = [
   { command: 'start', description: 'Open Give Thanks and start the habit' },
+  { command: 'help', description: 'How the app works — the manual' },
   { command: 'recap', description: 'See today’s thanks log' },
   { command: 'thanks', description: 'Log a thanks — whatever you type after it is the note' },
   { command: 'share', description: 'Get today’s shareable list (hidden notes stay hidden)' },
@@ -727,6 +760,7 @@ const PRIVATE_COMMANDS = [
 const GROUP_COMMANDS = [
   { command: 'garden', description: 'Open this group’s garden' },
   { command: 'sharerecap', description: 'Share today’s shared thanks in this group' },
+  { command: 'help', description: 'How the app works — the manual' },
 ];
 
 // ---- start ----
