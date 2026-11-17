@@ -70,6 +70,8 @@ function boot(startParam) {
           { id: 'n2', plant: 'sunflower', emoji: '🌻', plantName: 'Sunflower', text: 'a kind word', time: '13:00', date: '2026-11-17' },
         ],
         myPlant: serverMyPlant, plants: PLANTS,
+        // v5.8: the tulip is taken by another member, so picking it warns.
+        takenPlants: ['tulip'],
       }) };
     }
     if (String(url) === '/api/garden/plant') {
@@ -162,13 +164,13 @@ const click = (window, el) => el.dispatchEvent(new window.MouseEvent('click', { 
   await sleep(300);
   assert.ok(/Your thanks today: \d+ thanks/.test(document.getElementById('gardenMyCount').textContent),
     'garden must show the personal count, got: ' + document.getElementById('gardenMyCount').textContent);
-  const tulipBtn = document.getElementById('plantPicker').querySelector('[data-plant="tulip"]');
-  assert.ok(tulipBtn, 'picker must have a tulip button');
-  click(window, tulipBtn);
+  const roseBtn = document.getElementById('plantPicker').querySelector('[data-plant="rose"]');
+  assert.ok(roseBtn, 'picker must have a rose button');
+  click(window, roseBtn);
   await sleep(300);
   const plantCall = fetchCalls.find((c) => c.url === '/api/garden/plant');
-  assert.ok(plantCall && JSON.parse(plantCall.opts.body).plant === 'tulip', 'tapping a flower must POST the pick');
-  assert.ok(document.getElementById('plantStatus').textContent.includes('Tulip'), 'status must confirm the pick, got: ' + document.getElementById('plantStatus').textContent);
+  assert.ok(plantCall && JSON.parse(plantCall.opts.body).plant === 'rose', 'tapping a flower must POST the pick');
+  assert.ok(document.getElementById('plantStatus').textContent.includes('Rose'), 'status must confirm the pick, got: ' + document.getElementById('plantStatus').textContent);
   const recap = document.getElementById('gardenRecapList');
   assert.ok(recap.textContent.includes('good food') && recap.textContent.includes('🌷'),
     'recap list must show the shared notes with their plants, got: ' + recap.textContent);
@@ -176,15 +178,61 @@ const click = (window, el) => el.dispatchEvent(new window.MouseEvent('click', { 
   // 8. Deep link: a garden opened from a t.me link (start_param, no
   //    ?startapp= in the URL) must open that garden, not the setup line.
   const b2 = boot('garden_' + GARDEN_ID);
-  await sleep(300);
-  b2.window.fetchServerState();
-  await sleep(300);
-  b2.window.switchTab('garden');
-  await sleep(300);
-  assert.notStrictEqual(b2.document.getElementById('groupGarden').style.display, 'none',
-    'a garden opened via start_param must show the group garden');
+  await sleep(600);
+  // v5.8: a garden opened via start_param must land ON the garden page
+  // (the Garden tab), not the Counter tab — /seegardens buttons used to
+  // open the counter even though the garden had loaded.
+  assert.ok(b2.document.getElementById('groupGarden').style.display !== 'none' || b2.document.getElementById('gardenList').style.display !== 'none',
+    'a garden opened via start_param must show the garden');
   assert.ok(b2.document.getElementById('groupGardenTitle').textContent.includes('Family Chat'),
     'the start_param garden must load, got: ' + b2.document.getElementById('groupGardenTitle').textContent);
+  assert.strictEqual(b2.document.getElementById('tab-garden').classList.contains('active'), true,
+    'a garden opened via start_param must land on the Garden tab, not the Counter tab');
+  assert.strictEqual(b2.document.getElementById('tab-counter').classList.contains('active'), false,
+    'the Counter tab must not be active when opening into a garden');
 
-  console.log('garden v5.5+v5.6: all tests pass (names, toggle, reorder, archive/restore, delete, picker, recap, t.me deep link)');
+  // v5.8: the plant choice sticks in the app (CloudStorage) and is
+  // re-sent to the server. Pick a free plant (rose) — it saves to
+  // settings.plantChoices and the /api/garden request carries myPlant.
+  const b3 = boot();
+  const { window: w3, document: d3, cloud: c3, fetchCalls: f3 } = b3;
+  await sleep(300);
+  w3.fetchServerState();
+  await sleep(300);
+  w3.switchTab('garden');
+  await sleep(300);
+  // Open the single garden from the list (two gardens -> list view).
+  const rowBtn = d3.querySelector('#gardenList [data-action="open"][data-garden="' + GARDEN_ID + '"]');
+  if (rowBtn) { click(w3, rowBtn); await sleep(300); }
+  const roseBtn3 = d3.querySelector('#plantPicker [data-plant="rose"]');
+  assert.ok(roseBtn3, 'the rose picker button must exist');
+  click(w3, roseBtn3);
+  await sleep(300);
+  const settings3 = settingsOf(c3);
+  assert.strictEqual(settings3.plantChoices && settings3.plantChoices[GARDEN_ID], 'rose',
+    'picking a plant must save it to settings.plantChoices (CloudStorage), got ' + JSON.stringify(settings3.plantChoices));
+  // The next garden load re-sends the stored choice as myPlant.
+  f3.length = 0;
+  w3.switchTab('counter'); await sleep(100);
+  w3.switchTab('garden'); await sleep(300);
+  const gardenCall = f3.find((c) => String(c.url).startsWith('/api/garden?'));
+  assert.ok(gardenCall && String(gardenCall.url).includes('myPlant=rose'),
+    'the garden load must re-send the stored plant choice as myPlant, got ' + (gardenCall ? gardenCall.url : 'no call'));
+
+  // v5.8: warn on duplicates. The tulip is taken (takenPlants in the
+  // stub). First tap warns and does NOT save; second tap saves anyway.
+  const tulipBtn2 = d3.querySelector('#plantPicker [data-plant="tulip"]');
+  assert.ok(tulipBtn2, 'the tulip picker button must exist');
+  click(w3, tulipBtn2);
+  await sleep(200);
+  const status1 = d3.getElementById('plantStatus').textContent;
+  assert.ok(/already has/i.test(status1), 'first tap on a taken plant must warn, got: ' + status1);
+  assert.strictEqual(settingsOf(c3).plantChoices[GARDEN_ID], 'rose',
+    'the warning tap must not change the saved plant');
+  click(w3, tulipBtn2);
+  await sleep(300);
+  assert.strictEqual(settingsOf(c3).plantChoices[GARDEN_ID], 'tulip',
+    'the second tap on a taken plant must save it anyway');
+
+  console.log('garden v5.5+v5.6+v5.8: all tests pass (names, toggle, reorder, archive/restore, delete, picker, recap, t.me deep link, plant sticks, duplicate warning, garden tab on open)');
 })().catch((e) => { console.error('garden v5.5+v5.6 FAILED:', e.message); process.exit(1); });

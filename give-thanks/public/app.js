@@ -62,6 +62,11 @@ function migrateSettings(raw) {
   // labels each garden with its name, not "Open group garden").
   if (!Array.isArray(s.archivedGardens)) s.archivedGardens = [];
   if (!s.gardenTitles || typeof s.gardenTitles !== 'object' || Array.isArray(s.gardenTitles)) s.gardenTitles = {};
+  // v5.8: the plant choice per garden. This is the DURABLE home of the
+  // choice — Telegram CloudStorage survives a server restart/redeploy,
+  // data.json does not, which is why plants kept changing. The app
+  // re-sends these on every sync, so a wiped server re-learns them.
+  if (!s.plantChoices || typeof s.plantChoices !== 'object' || Array.isArray(s.plantChoices)) s.plantChoices = {};
   return s;
 }
 function migrateToday(raw) {
@@ -126,7 +131,7 @@ function timeNow() {
 
 const state = {
   today: { version: DATA_VERSION, date: todayKey(), count: 0, notes: [] },
-  settings: { version: DATA_VERSION, timezone: DEFAULT_TZ, notificationsOn: true, notifyOnlyIfEmpty: true, gardenOptIn: false, groupGardens: [], archivedGardens: [], gardenTitles: {}, features: { gardenWeeklyShare: false, newRecapFormat: false, shareOutsideTelegram: true } },
+  settings: { version: DATA_VERSION, timezone: DEFAULT_TZ, notificationsOn: true, notifyOnlyIfEmpty: true, gardenOptIn: false, groupGardens: [], archivedGardens: [], gardenTitles: {}, plantChoices: {}, features: { gardenWeeklyShare: false, newRecapFormat: false, shareOutsideTelegram: true } },
   gardenId: 'personal',
   // Undo history: one entry per press, in press order. true = that press had
   // a note, false = count-only press. Without it, undo can't tell whether
@@ -718,8 +723,21 @@ const GARDEN_PLANTS_FALLBACK = [
   { id: 'clover', emoji: '🍀', name: 'Clover' },
   { id: 'bamboo', emoji: '🎋', name: 'Bamboo' },
   { id: 'hyacinth', emoji: '🪻', name: 'Hyacinth' },
+  // v5.8 fruits — no eggplant (dab, 2026-11-17). The server is the source
+  // of truth for the list; this fallback is only for when the garden
+  // hasn't loaded yet.
+  { id: 'apple', emoji: '🍎', name: 'Apple' },
+  { id: 'strawberry', emoji: '🍓', name: 'Strawberry' },
+  { id: 'cherry', emoji: '🍒', name: 'Cherry' },
+  { id: 'peach', emoji: '🍑', name: 'Peach' },
+  { id: 'grapes', emoji: '🍇', name: 'Grapes' },
+  { id: 'lemon', emoji: '🍋', name: 'Lemon' },
+  { id: 'orange', emoji: '🍊', name: 'Orange' },
+  { id: 'pineapple', emoji: '🍍', name: 'Pineapple' },
+  { id: 'mango', emoji: '🥭', name: 'Mango' },
+  { id: 'watermelon', emoji: '🍉', name: 'Watermelon' },
 ];
-const groupGarden = { title: '', notes: [], myPlant: '', plants: GARDEN_PLANTS_FALLBACK, memberCount: 0, loaded: false, error: '' };
+const groupGarden = { title: '', notes: [], myPlant: '', plants: GARDEN_PLANTS_FALLBACK, takenPlants: [], memberCount: 0, loaded: false, error: '' };
 
 async function loadGarden(forceList) {
   // Gardens are group-only (dab, 2026-11-17) — the personal garden was
@@ -747,13 +765,18 @@ async function loadGarden(forceList) {
     return;
   }
   try {
-    const res = await fetch('/api/garden?gardenId=' + encodeURIComponent(state.gardenId) + '&initData=' + encodeURIComponent(tg.initData));
+    // v5.8: send the app's stored plant choice for this garden as
+    // `myPlant` — the app (CloudStorage) is the durable home of the
+    // choice, so a server that lost data.json re-learns it here.
+    const myStoredPlant = (state.settings.plantChoices && state.settings.plantChoices[state.gardenId]) || '';
+    const res = await fetch('/api/garden?gardenId=' + encodeURIComponent(state.gardenId) + '&initData=' + encodeURIComponent(tg.initData) + (myStoredPlant ? '&myPlant=' + encodeURIComponent(myStoredPlant) : ''));
     const j = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error((j && j.error) || 'could not load the garden');
     groupGarden.title = j.title || 'Group garden';
     groupGarden.notes = Array.isArray(j.notes) ? j.notes : [];
     groupGarden.myPlant = j.myPlant || '';
     groupGarden.plants = Array.isArray(j.plants) && j.plants.length ? j.plants : GARDEN_PLANTS_FALLBACK;
+    groupGarden.takenPlants = Array.isArray(j.takenPlants) ? j.takenPlants : [];
     groupGarden.memberCount = j.memberCount || 0;
     groupGarden.loaded = true;
     groupGarden.error = '';
@@ -1002,6 +1025,7 @@ function updatePlantStatus() {
 }
 function setPlantStatus(msg) { plantStatusMsg = msg || ''; updatePlantStatus(); }
 
+let pendingPlantConfirm = ''; // v5.8: the plant the user tapped once when it's already taken — tap again to confirm
 async function pickPlant(plantId) {
   if (!tg || !tg.initData) {
     // Never fail silently — a tap that does nothing looks broken (dab,
@@ -1009,8 +1033,26 @@ async function pickPlant(plantId) {
     setPlantStatus('Couldn’t save your plant — open the garden from Telegram, not a browser link.');
     return;
   }
+  // v5.8: warn on duplicates (dab, 2026-11-17). If someone else in this
+  // garden already has this plant, the first tap just warns — tap the
+  // same plant again to pick it anyway. Picking your current plant
+  // again, or a free plant, saves straight away.
+  const taken = Array.isArray(groupGarden.takenPlants) ? groupGarden.takenPlants : [];
+  if (plantId !== groupGarden.myPlant && taken.includes(plantId) && pendingPlantConfirm !== plantId) {
+    pendingPlantConfirm = plantId;
+    setPlantStatus('Someone in this garden already has the ' + plantName(plantId) + ' — tap it again to pick it anyway.');
+    try { if (tg && tg.HapticFeedback) tg.HapticFeedback.impactOccurred('light'); } catch (e) {}
+    return;
+  }
+  pendingPlantConfirm = '';
   const prev = groupGarden.myPlant;
   groupGarden.myPlant = plantId;
+  // v5.8: the choice lives in the app's settings (CloudStorage) first —
+  // that's the durable home, so it survives a server restart/redeploy.
+  // The POST tells the server too; the next sync re-asserts it.
+  if (!state.settings.plantChoices || typeof state.settings.plantChoices !== 'object') state.settings.plantChoices = {};
+  state.settings.plantChoices[state.gardenId] = plantId;
+  saveSettings();
   renderGardenTab();
   setPlantStatus('Your plant: ' + plantName(plantId) + ' — saving…');
   try { if (tg && tg.HapticFeedback) tg.HapticFeedback.impactOccurred('light'); } catch (e) {}
@@ -1336,7 +1378,14 @@ render();
   try { await loadAbout(); } catch (e) {}
   try { await loadSettings(); } catch (e) {}
   try { state.today.date = todayKey(); await loadToday(); } catch (e) {}
+  // v5.8: if the app was opened into a garden (a /seegardens button, a
+  // garden link, or a deep link), land ON the garden page — not the
+  // Counter tab. loadGarden fetches the garden; switchTab shows it.
+  // The tab switches even if the load fails, so the user sees the
+  // garden's error message instead of the counter. (dab, 2026-11-17:
+  // /seegardens buttons went to the counter.)
   try { if (state.gardenId !== 'personal') await loadGarden(); } catch (e) {}
+  try { if (state.gardenId !== 'personal') switchTab('garden'); } catch (e) {}
   try { render(); } catch (e) {}
   hideLoading();
 })();

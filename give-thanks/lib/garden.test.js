@@ -3,7 +3,7 @@
 // note id, and the garden resets when a new day arrives (dab, 2026-11-17:
 // "let's just have the garden reset every day").
 const assert = require('assert');
-const { createGardenStore, getGarden, rolloverGarden, pruneGarden, addGardenNote } = require('./garden');
+const { createGardenStore, getGarden, rolloverGarden, pruneGarden, addGardenNote, updateMemberPlant } = require('./garden');
 
 const store = createGardenStore();
 const gid = '-100123';
@@ -50,4 +50,21 @@ pruneGarden(g);
 assert.strictEqual(g.notes.length, 1, 'only notes from the garden’s day stay');
 assert.strictEqual(g.notes[0].id, 'n-y');
 
-console.log('garden: all garden store tests pass (shareable only, dedup, daily reset)');
+// v5.8: the plant is stored ON the note when it's planted, so a note's
+// plant never reshuffles at read time.
+const store2 = createGardenStore();
+addGardenNote(store2, gid, 111, { id: 'p-1', text: 'soup', time: '09:00', shareable: true, date: today, plant: 'tulip' });
+addGardenNote(store2, gid, 222, { id: 'p-2', text: 'walk', time: '10:00', shareable: true, date: today, plant: 'apple' });
+let g2 = getGarden(store2, gid);
+assert.strictEqual(g2.notes[0].plant, 'tulip', 'the note keeps the plant it was planted with');
+assert.strictEqual(g2.notes[1].plant, 'apple', 'the second note keeps its own plant');
+// A note with no plant stores an empty plant (the reader backfills it).
+addGardenNote(store2, gid, 333, { id: 'p-3', text: 'sun', time: '11:00', shareable: true, date: today });
+assert.strictEqual(getGarden(store2, gid).notes[2].plant, '', 'a note with no plant stores empty, not a random one');
+// When a member changes plant, their notes switch to the new plant.
+assert.strictEqual(updateMemberPlant(g2, 111, 'mango'), 1, 'one note updated for the member');
+assert.strictEqual(g2.notes[0].plant, 'mango', 'the member’s note now shows the new plant');
+assert.strictEqual(g2.notes[1].plant, 'apple', 'other members’ notes are untouched');
+assert.strictEqual(updateMemberPlant(g2, 999, 'rose'), 0, 'a member with no notes updates nothing');
+
+console.log('garden: all garden store tests pass (shareable only, dedup, daily reset, plant on note)');

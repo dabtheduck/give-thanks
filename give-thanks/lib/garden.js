@@ -39,9 +39,26 @@ function addGardenNote(store, gardenId, userId, note) {
   if (!note || !note.shareable || !note.id) return;
   if (note.date) rolloverGarden(g, String(note.date));
   if (g.notes.some((n) => n.id === note.id)) return; // dedup by note id
-  g.notes.push({ id: String(note.id), userId, text: String(note.text || '').slice(0, 140), time: String(note.time || ''), date: String(note.date || g.date || '') });
+  // v5.8: the plant is stored ON the note when it's planted, so a note's
+  // plant never reshuffles at read time. `note.plant` is the author's
+  // plant id at sync time (the server passes it in); if it's missing or
+  // invalid, the reader resolves it via plantFor and the GET handler
+  // backfills it. When the author changes plant, updateMemberPlant
+  // rewrites their notes so the plant still represents them.
+  g.notes.push({ id: String(note.id), userId, plant: String(note.plant || ''), text: String(note.text || '').slice(0, 140), time: String(note.time || ''), date: String(note.date || g.date || '') });
   if (g.notes.length > 200) g.notes = g.notes.slice(-200);
   pruneGarden(g);
 }
 
-module.exports = { createGardenStore, getGarden, rolloverGarden, pruneGarden, addGardenNote };
+// v5.8: when a member changes their plant, rewrite their notes in this
+// garden to the new plant, so the plant still represents them. Returns
+// how many notes were updated.
+function updateMemberPlant(g, userId, plantId) {
+  let n = 0;
+  for (const note of g.notes) {
+    if (String(note.userId) === String(userId)) { note.plant = String(plantId); n += 1; }
+  }
+  return n;
+}
+
+module.exports = { createGardenStore, getGarden, rolloverGarden, pruneGarden, addGardenNote, updateMemberPlant };

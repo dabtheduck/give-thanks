@@ -31,9 +31,9 @@ const express = require('express');
 const { Telegraf, Markup } = require('telegraf');
 const { CURRENT_VERSION, migrateUser, migrateToday, FIXED_RESET_HOUR, FIXED_RESET_MINUTE, FIXED_NOTIFY_HOUR, FIXED_NOTIFY_MINUTE } = require('./lib/migrations');
 const { formatRecap, buildShareText, staleNotice, notSyncedNotice, recapStatus, displayDate } = require('./lib/recap');
-const { PLANTS, plantById, randomPlant } = require('./lib/plants');
+const { PLANTS, plantById, randomPlant, randomPlantExcluding } = require('./lib/plants');
 const { mergeSync } = require('./lib/merge');
-const { createGardenStore, getGarden, rolloverGarden, pruneGarden, addGardenNote } = require('./lib/garden');
+const { createGardenStore, getGarden, rolloverGarden, pruneGarden, addGardenNote, updateMemberPlant } = require('./lib/garden');
 const { formatAnnouncement, collectRecipients } = require('./lib/announce');
 
 // ---- env (no dotenv dependency, tiny parser) ----
@@ -194,7 +194,7 @@ async function isGroupMember(groupId, userId) {
 }
 // The plant shown for a member's notes: their pick, else a deterministic
 // default from their user id (so the garden is varied from the first note).
-function plantFor(userId, gardenId) {
+function plantFor(userId, gardenId, taken) {
   const u = users.get(userId);
   const pick = u && u.plantChoices && u.plantChoices[String(gardenId)];
   const p = plantById(pick);
@@ -205,13 +205,37 @@ function plantFor(userId, gardenId) {
   // loads. If there's no user record to save it on (e.g. after a
   // redeploy wiped data.json), return a random one unsaved — it settles
   // once they sync and get a record again.
-  const random = randomPlant();
+  // v5.8: the fallback is UNIQUE — it avoids plants already taken in
+  // this garden (dab, 2026-11-17), so a group with more members than
+  // plants still gets distinct plants for as long as there are free
+  // ones. `taken` is a Set of plant ids already used in the garden.
+  const random = randomPlantExcluding(taken);
   if (u) {
     if (!u.plantChoices || typeof u.plantChoices !== 'object') u.plantChoices = {};
     u.plantChoices[String(gardenId)] = random.id;
     saveSettings();
   }
   return random;
+}
+
+// v5.8: the plants already taken in a garden — the saved choices of every
+// member plus the plants stored on the garden's notes. Used by the unique
+// random fallback and by the duplicate warning in the picker.
+function takenPlantsFor(gid, excludeUserId) {
+  const taken = new Set();
+  for (const [uid, u] of users) {
+    if (excludeUserId != null && String(uid) === String(excludeUserId)) continue;
+    const pick = u && u.plantChoices && u.plantChoices[String(gid)];
+    if (plantById(pick)) taken.add(pick);
+  }
+  const g = gardens.get(String(gid));
+  if (g) {
+    for (const n of g.notes) {
+      if (excludeUserId != null && String(n.userId) === String(excludeUserId)) continue;
+      if (plantById(n.plant)) taken.add(n.plant);
+    }
+  }
+  return taken;
 }
 
 // ---- Telegram initData validation ----
@@ -275,42 +299,13 @@ function isAdmin(userId) {
 bot.start(async (ctx) => {
   const u = getUser(ctx.from.id, ctx.chat.id);
   u.blocked = false; saveSettings();
-  await ctx.reply(
-    `Hey, welcome to Give Thanks 🌱\n\nPress the button, say thanks, add a little note if you like.\n\nYour day runs until 3am, so night owls can add thanks and look back over the list before bed — the counter resets at 3am, and we start fresh.\n\nWhenever you want your list saved here, tap “Send today’s recap to chat” in the app — it works any time.\n\nYou can also just type /thanks followed by a note right here — it counts the same as pressing in the app.\n\nNo streaks. No pressure. Just one quiet habit.`,
-    openKeyboard()
-  );
+  await ctx.reply(getStartText(), openKeyboard());
 });
 bot.command('help', async (ctx) => {
   // The manual (dab, 2026-11-17): how the app works, in the chat. Works
-  // in 1:1 and in groups — the group half only applies in a group.
-  await ctx.reply(
-    `🌱 Give Thanks — how it works\n\n` +
-    `This is a counter with a memory. Press it when something good, small or ordinary happens.\n\n` +
-    `COUNTING\n` +
-    `• Open the app (the button below, or the Menu Button) and press “+ thanks” — once per thanks.\n` +
-    `• Add a note if you like (up to 140 characters). Tap a note in Today’s list to edit it later; × deletes that thanks.\n` +
-    `• Or just type /thanks followed by a note right here in chat — it counts the same, and the app picks it up next time you open it.\n\n` +
-    `YOUR DAY\n` +
-    `• Your day runs until 3am. At 3am the counter resets and the notes disappear forever — unless you save them first.\n` +
-    `• Save the list in your 1:1 chat with “Send today’s recap to chat” in the app, or type /recap here.\n\n` +
-    `SHARING\n` +
-    `• Tick the share box on a note to make it shareable. Unticked notes stay private and show as blurred out.\n` +
-    `• The Share tab in the app (“Share with friends”) sends today’s list outside Telegram, as a message or a pixel-art card.\n\n` +
-    `GROUP GARDENS\n` +
-    `• Add me to a group and type /garden there to start that group’s garden. Thanks you tick “share” grow in the garden as plants — one plant per shared thanks, no names.\n` +
-    `• Pick your plant when you open a garden; tap any plant to read its thanks.\n` +
-    `• See your gardens in the 1:1 app, under the Garden tab — or type /seegardens here.\n` +
-    `• /sharerecap in the group posts the group’s shared thanks, each with its plant.\n` +
-    `• Gardens reset at 3am too.\n\n` +
-    `COMMANDS\n` +
-    `• /thanks <note> — log a thanks from chat\n` +
-    `• /recap — save today’s list in this chat\n` +
-    `• /share — today’s shareable list\n` +
-    `• /garden — start or open a group garden (groups only)\n` +
-    `• /sharerecap — the group’s shared thanks (groups only)\n` +
-    `• /seegardens — your group gardens\n\n` +
-    `No streaks. No pressure. Just one quiet habit.`
-  );
+  // in 1:1 and in groups — the group half only applies in a group. The
+  // text is owner-editable via /edit_help (v5.8).
+  await ctx.reply(getHelpText());
 });
 bot.command('recap', async (ctx) => {
   // Everyone in 1:1 (v5 — no longer owner-only, dab 2026-11-17). Reads the
@@ -473,32 +468,119 @@ bot.command('seegardens', async (ctx) => {
 });
 
 // ---- Edit About on the fly in Telegram ----
-// About text lives in public/content/about.md. /edit_about lets the owner replace it from Telegram.
+// About / Help / Start text — owner-editable from Telegram (v5.8).
+// Each lives in a file under public/content/ (the repo default — what a
+// redeploy reverts to) AND in a custom-texts.json override. /edit_about,
+// /edit_help and /edit_start write BOTH: the file (so the app's static
+// fallback and the repo stay in sync) and the override (so the edit wins
+// even if the file is ever lost or stale). The getter prefers the
+// override, then the file, then a hardcoded fallback. A redeploy still
+// reverts to the GitHub file — to keep an edit permanently, commit the
+// updated file to GitHub (or ask Muse to put it in the next zip).
 // Admin: set ADMIN_USER_ID in .env to your Telegram ID (from @userinfobot).
-// If not set, the first person to run /edit_about in a 1:1 chat becomes admin for this install.
+// If not set, the first person to run an owner command in a 1:1 chat becomes admin for this install.
 const ABOUT_FILE = path.join(__dirname, 'public', 'content', 'about.md');
+const HELP_FILE = path.join(__dirname, 'public', 'content', 'help.md');
+const START_FILE = path.join(__dirname, 'public', 'content', 'start.md');
+const CUSTOM_TEXTS_FILE = path.join(__dirname, 'custom-texts.json');
 const awaitingAbout = new Map(); // userId -> true
+const awaitingHelp = new Map(); // userId -> true
+const awaitingStart = new Map(); // userId -> true
+let customTexts = { about: null, help: null, start: null };
+function loadCustomTexts() {
+  try {
+    if (!fs.existsSync(CUSTOM_TEXTS_FILE)) return;
+    const raw = JSON.parse(fs.readFileSync(CUSTOM_TEXTS_FILE, 'utf8'));
+    if (raw && typeof raw === 'object') {
+      for (const k of ['about', 'help', 'start']) if (typeof raw[k] === 'string' && raw[k].trim()) customTexts[k] = raw[k];
+    }
+  } catch (e) { console.error('loadCustomTexts', e.message); }
+}
+function saveCustomTexts() {
+  try { fs.writeFileSync(CUSTOM_TEXTS_FILE, JSON.stringify(customTexts, null, 2)); } catch (e) { console.error('saveCustomTexts', e.message); }
+}
+loadCustomTexts();
+function readTextFile(file, fallback) {
+  try { const t = fs.readFileSync(file, 'utf8'); if (t && t.trim()) return t; } catch (e) {}
+  return fallback;
+}
+function writeTextFile(file, text) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, text);
+}
 function getAboutText() {
-  try { return fs.readFileSync(ABOUT_FILE, 'utf8'); } catch { return '# Bulletin Board\n\nWrite whatever you like here.'; }
+  if (customTexts.about) return customTexts.about;
+  return readTextFile(ABOUT_FILE, '# Bulletin Board\n\nWrite whatever you like here.');
 }
 function setAboutText(text) {
-  fs.mkdirSync(path.dirname(ABOUT_FILE), { recursive: true });
-  fs.writeFileSync(ABOUT_FILE, text);
+  customTexts.about = text; saveCustomTexts();
+  writeTextFile(ABOUT_FILE, text);
+}
+function getHelpText() {
+  if (customTexts.help) return customTexts.help;
+  return readTextFile(HELP_FILE, '🌱 Give Thanks — how it works\n\nPress "+ thanks" when something good happens. Your day runs until 3am. Type /recap to save today\'s list.');
+}
+function setHelpText(text) {
+  customTexts.help = text; saveCustomTexts();
+  writeTextFile(HELP_FILE, text);
+}
+function getStartText() {
+  if (customTexts.start) return customTexts.start;
+  return readTextFile(START_FILE, 'Hey, welcome to Give Thanks 🌱\n\nPress the button, say thanks, add a little note if you like.');
+}
+function setStartText(text) {
+  customTexts.start = text; saveCustomTexts();
+  writeTextFile(START_FILE, text);
 }
 bot.command('edit_about', async (ctx) => {
   if (ctx.chat.type !== 'private') return ctx.reply('Please send /edit_about in a 1:1 chat with me, not in a group.');
   if (adminId && String(ctx.from.id) !== adminId) return ctx.reply('Only the bot owner can edit the About page.');
   if (!adminId) { adminId = String(ctx.from.id); console.log(`[give-thanks] About admin set to ${adminId}`); }
   awaitingAnnouncement.delete(ctx.from.id);
+  awaitingHelp.delete(ctx.from.id);
+  awaitingStart.delete(ctx.from.id);
   awaitingAbout.set(ctx.from.id, true);
   const current = getAboutText();
   await ctx.reply(
     `Okay, send me the new About / Bulletin Board text as your next message.\n\nYou can write as much as you like, with # headings, blank lines between paragraphs, and - bullets.\n\nIt will replace the current page straight away. Send /cancel to stop without changing anything.\n\nCurrent text:\n${current.slice(0, 800)}${current.length > 800 ? '…' : ''}`,
   );
 });
+// /edit_help and /edit_start (dab, 2026-11-17): same two-step, owner-only
+// flow as /edit_about, for the /help manual and the /start welcome. Hidden
+// from the menu. The new text is saved to the override AND the content
+// file, so it wins over the repo default until a redeploy — commit the
+// file to GitHub to keep it permanently.
+bot.command('edit_help', async (ctx) => {
+  if (ctx.chat.type !== 'private') return ctx.reply('Please send /edit_help in a 1:1 chat with me, not in a group.');
+  if (adminId && String(ctx.from.id) !== adminId) return ctx.reply('Only the bot owner can edit the Help message.');
+  if (!adminId) { adminId = String(ctx.from.id); console.log(`[give-thanks] Help admin set to ${adminId}`); }
+  awaitingAnnouncement.delete(ctx.from.id);
+  awaitingAbout.delete(ctx.from.id);
+  awaitingStart.delete(ctx.from.id);
+  awaitingHelp.set(ctx.from.id, true);
+  const current = getHelpText();
+  await ctx.reply(
+    `Okay, send me the new /help text as your next message.\n\nThis is the manual people see when they type /help. Write it however you like — sections, bullets, as long as you want.\n\nIt will replace the current message straight away. Send /cancel to stop without changing anything.\n\nCurrent text:\n${current.slice(0, 800)}${current.length > 800 ? '…' : ''}`,
+  );
+});
+bot.command('edit_start', async (ctx) => {
+  if (ctx.chat.type !== 'private') return ctx.reply('Please send /edit_start in a 1:1 chat with me, not in a group.');
+  if (adminId && String(ctx.from.id) !== adminId) return ctx.reply('Only the bot owner can edit the Start message.');
+  if (!adminId) { adminId = String(ctx.from.id); console.log(`[give-thanks] Start admin set to ${adminId}`); }
+  awaitingAnnouncement.delete(ctx.from.id);
+  awaitingAbout.delete(ctx.from.id);
+  awaitingHelp.delete(ctx.from.id);
+  awaitingStart.set(ctx.from.id, true);
+  const current = getStartText();
+  await ctx.reply(
+    `Okay, send me the new /start welcome text as your next message.\n\nThis is what people see the first time they open the bot. Keep it short and warm — it's the first hello.\n\nIt will replace the current message straight away. Send /cancel to stop without changing anything.\n\nCurrent text:\n${current.slice(0, 800)}${current.length > 800 ? '…' : ''}`,
+  );
+});
 bot.command('cancel', async (ctx) => {
   if (awaitingAnnouncement.delete(ctx.from.id)) return ctx.reply('Cancelled — no announcement sent.');
   if (awaitingAbout.delete(ctx.from.id)) return ctx.reply('Cancelled — About page unchanged.');
+  if (awaitingHelp.delete(ctx.from.id)) return ctx.reply('Cancelled — Help message unchanged.');
+  if (awaitingStart.delete(ctx.from.id)) return ctx.reply('Cancelled — Start message unchanged.');
 });
 
 // ---- Send an announcement to every user (owner-only, 1:1 chats only) ----
@@ -520,8 +602,10 @@ bot.command('send_announcement', async (ctx) => {
 });
 bot.on('text', async (ctx, next) => {
   const awaitingA = awaitingAbout.has(ctx.from.id);
+  const awaitingH = awaitingHelp.has(ctx.from.id);
+  const awaitingS = awaitingStart.has(ctx.from.id);
   const awaitingN = awaitingAnnouncement.has(ctx.from.id);
-  if (!awaitingA && !awaitingN) return next();
+  if (!awaitingA && !awaitingH && !awaitingS && !awaitingN) return next();
   if (ctx.message.text.startsWith('/')) return next();
   if (awaitingA) {
     awaitingAbout.delete(ctx.from.id);
@@ -530,6 +614,24 @@ bot.on('text', async (ctx, next) => {
     if (text.length < 3) return ctx.reply('That looks too short — send /edit_about again and paste the full text.');
     setAboutText(text);
     await ctx.reply(`Saved 🌱 About page updated.\n\nPreview:\n${text.slice(0, 400)}${text.length > 400 ? '…' : ''}\n\nOpen the Mini App → About to see it live.`);
+    return;
+  }
+  if (awaitingH) {
+    awaitingHelp.delete(ctx.from.id);
+    if (!isAdmin(ctx.from.id)) return ctx.reply('Only the bot owner can edit the Help message.');
+    const text = ctx.message.text.trim();
+    if (text.length < 3) return ctx.reply('That looks too short — send /edit_help again and paste the full text.');
+    setHelpText(text);
+    await ctx.reply(`Saved 🌱 Help message updated.\n\nPreview:\n${text.slice(0, 400)}${text.length > 400 ? '…' : ''}\n\nType /help to see it live.`);
+    return;
+  }
+  if (awaitingS) {
+    awaitingStart.delete(ctx.from.id);
+    if (!isAdmin(ctx.from.id)) return ctx.reply('Only the bot owner can edit the Start message.');
+    const text = ctx.message.text.trim();
+    if (text.length < 3) return ctx.reply('That looks too short — send /edit_start again and paste the full text.');
+    setStartText(text);
+    await ctx.reply(`Saved 🌱 Start message updated.\n\nPreview:\n${text.slice(0, 400)}${text.length > 400 ? '…' : ''}\n\nType /start to see it live.`);
     return;
   }
   // Announcement: send it to every known user's 1:1 chat.
@@ -553,7 +655,7 @@ const app = express();
 app.use(express.json({ limit: '200kb' }));
 // No-store for app assets: the live counter once stayed broken because browsers /
 // Telegram WebView kept serving a cached pre-fix app.js after a redeploy.
-// (index.html also loads app.js/style.css/themes.js with ?v=20261117u.)
+// (index.html also loads app.js/style.css/themes.js with ?v=20261117v.)
 app.use(express.static(path.join(__dirname, 'public'), {
   maxAge: 0, etag: false,
   setHeaders(res, filePath) { if (/\.(js|css|html)$/.test(filePath)) res.set('Cache-Control', 'no-store'); },
@@ -586,6 +688,16 @@ app.post('/api/sync', (req, res) => {
     // v5.6: archived gardens (hidden from the main list, restorable).
     // Synced from the app's settings, same as groupGardens.
     if (Array.isArray(s.archivedGardens)) u.archivedGardens = s.archivedGardens;
+    // v5.8: the app's plant choices per garden. The app (Telegram
+    // CloudStorage) is the durable home of the choice — it survives a
+    // server restart/redeploy, data.json does not. The app re-sends its
+    // choices on every sync, so a wiped data.json re-learns them.
+    if (s.plantChoices && typeof s.plantChoices === 'object' && !Array.isArray(s.plantChoices)) {
+      if (!u.plantChoices || typeof u.plantChoices !== 'object') u.plantChoices = {};
+      for (const [gid, pid] of Object.entries(s.plantChoices)) {
+        if (plantById(String(pid))) u.plantChoices[String(gid)] = String(pid);
+      }
+    }
     if (s.features && typeof s.features === 'object') u.features = { ...u.features, ...s.features };
     u.version = CURRENT_VERSION;
     saveSettings();
@@ -623,7 +735,13 @@ app.post('/api/sync', (req, res) => {
       // deleted); only real group ids get notes planted in them.
       if (req.body.gardenId && String(req.body.gardenId) !== 'personal') gardenIds.add(String(req.body.gardenId));
       for (const gid of gardenIds) {
-        for (const n of u.today.notes) addGardenNote(gardens, gid, userId, { ...n, date: u.today.date });
+        // v5.8: plant the author's current plant choice ON the note, so
+        // the note's plant is fixed at plant time and never reshuffles.
+        // The choice comes from the app (CloudStorage) via the sync, or
+        // from the server's saved choice; plantFor falls back to a
+        // unique random plant if neither has one yet.
+        const authorPlant = plantFor(userId, gid, takenPlantsFor(gid, userId));
+        for (const n of u.today.notes) addGardenNote(gardens, gid, userId, { ...n, date: u.today.date, plant: authorPlant.id });
       }
     } // end else (non-stale today)
   }
@@ -716,16 +834,40 @@ app.get('/api/garden', async (req, res) => {
   g.members.add(userId);
   const u = getUser(userId, userId);
   if (!u.groupGardens.includes(gid)) { u.groupGardens.push(gid); saveSettings(); }
+  // v5.8: the app is the durable home of the plant choice (Telegram
+  // CloudStorage survives a server restart/redeploy, data.json does not —
+  // that's why plants kept changing). The app sends its stored choice as
+  // `myPlant`; if the server has no saved choice for this garden (e.g.
+  // data.json was wiped), adopt the app's choice so it sticks.
+  const appPlant = plantById(String(req.query.myPlant || ''));
+  if (appPlant && !plantById(u.plantChoices && u.plantChoices[gid])) {
+    if (!u.plantChoices || typeof u.plantChoices !== 'object') u.plantChoices = {};
+    u.plantChoices[gid] = appPlant.id;
+    saveSettings();
+  }
   // v5.1: the garden is daily — roll it to the reader's day first, so
   // yesterday's plants never show up in today's garden.
   rolloverGarden(g, serverDayStr(new Date(), u.timezone));
   pruneGarden(g);
+  // v5.8: a note's plant is stored ON the note when it's planted, so it
+  // never reshuffles at read time. Notes planted before v5.8 have no
+  // stored plant — resolve via plantFor (unique fallback) and backfill
+  // the note so it sticks from now on.
+  const taken = takenPlantsFor(gid);
   const notes = g.notes.map((n) => {
-    const p = plantFor(n.userId, gid);
+    let p = plantById(n.plant);
+    if (!p) {
+      p = plantFor(n.userId, gid, taken);
+      n.plant = p.id;
+      taken.add(p.id);
+    }
     return { id: n.id, plant: p.id, emoji: p.emoji, plantName: p.name, text: n.text, time: n.time, date: n.date };
   });
-  const myPlant = plantFor(userId, gid);
-  res.json({ ok: true, gardenId: gid, title: g.title || 'Group garden', memberCount: g.members.size, notes, myPlant: myPlant.id, plants: PLANTS });
+  const myPlant = plantFor(userId, gid, takenPlantsFor(gid, userId));
+  // v5.8: plants already used by OTHER members in this garden, so the
+  // app can warn when the user picks a duplicate (tap again to confirm).
+  const takenByOthers = Array.from(takenPlantsFor(gid, userId));
+  res.json({ ok: true, gardenId: gid, title: g.title || 'Group garden', memberCount: g.members.size, notes, myPlant: myPlant.id, plants: PLANTS, takenPlants: takenByOthers });
 });
 
 // Pick your plant for a group garden (v5). One per group, changeable any time.
@@ -741,6 +883,11 @@ app.post('/api/garden/plant', async (req, res) => {
   const u = getUser(userId, userId);
   u.plantChoices[gid] = plant.id;
   saveSettings();
+  // v5.8: the plant represents the member, so their existing notes in
+  // this garden switch to the new plant too — otherwise the old notes
+  // would keep showing the plant they just changed away from.
+  const g = getGarden(gardens, gid);
+  updateMemberPlant(g, userId, plant.id);
   res.json({ ok: true, plant: plant.id });
 });
 
