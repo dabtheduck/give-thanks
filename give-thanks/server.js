@@ -48,6 +48,17 @@ function loadEnv() {
 loadEnv();
 const BOT_TOKEN = process.env.BOT_TOKEN || '';
 const MINI_APP_URL = (process.env.MINI_APP_URL || 'http://localhost:3000').replace(/\/$/, '');
+// A garden link to share as TEXT must be a t.me deep link, not the raw
+// Mini App URL. A raw URL pasted in a chat opens in the browser (dab,
+// 2026-11-17) — Telegram has no way to know it is a Mini App. A t.me
+// link (https://t.me/<bot>?startapp=garden_<id>) opens Telegram and
+// launches the Mini App with the start parameter. The web_app BUTTONS
+// still use the raw MINI_APP_URL — a button opens the Mini App directly
+// and works fine; only the pasted-text fallback needs the deep link.
+function gardenDeepLink(gid) {
+  const username = (bot && bot.botInfo && bot.botInfo.username) || 'givethanksbot';
+  return 'https://t.me/' + username + '?startapp=garden_' + String(gid);
+}
 const PORT = parseInt(process.env.PORT || '3000', 10);
 // v1: no scheduled messages. The day ends at 03:00 (the counter resets
 // then); the recap is on demand (app button / owner-only /recap).
@@ -360,7 +371,7 @@ bot.command('garden', async (ctx) => {
     await ctx.reply(text, Markup.inlineKeyboard([[Markup.button.webApp('🌱 Open the group garden', url)]]));
   } catch (e) {
     console.error('garden button failed, sending plain link', e.message);
-    await ctx.reply(text + '\n\n' + url);
+    await ctx.reply(text + '\n\n' + gardenDeepLink(gid));
   }
 });
 
@@ -420,7 +431,7 @@ bot.command('seegardens', async (ctx) => {
     console.error('seegardens buttons failed, sending plain links', e.message);
     const links = u.groupGardens.map((gid) => {
       const title = getGarden(gardens, gid).title || ('Group ' + gid);
-      return '• ' + title + '\n' + MINI_APP_URL + '?startapp=garden_' + gid;
+      return '• ' + title + '\n' + gardenDeepLink(gid);
     });
     await ctx.reply(['🌸 Your gardens', ''].concat(links).join('\n'));
   }
@@ -507,7 +518,7 @@ const app = express();
 app.use(express.json({ limit: '200kb' }));
 // No-store for app assets: the live counter once stayed broken because browsers /
 // Telegram WebView kept serving a cached pre-fix app.js after a redeploy.
-// (index.html also loads app.js/style.css/themes.js with ?v=20261117q.)
+// (index.html also loads app.js/style.css/themes.js with ?v=20261117r.)
 app.use(express.static(path.join(__dirname, 'public'), {
   maxAge: 0, etag: false,
   setHeaders(res, filePath) { if (/\.(js|css|html)$/.test(filePath)) res.set('Cache-Control', 'no-store'); },

@@ -27,7 +27,7 @@ const PLANTS = [
   { id: 'rose', name: 'Rose', emoji: '🌹' },
 ];
 
-function boot() {
+function boot(startParam) {
   const cloud = new Map();
   const local = new Map();
   const fetchCalls = [];
@@ -38,6 +38,9 @@ function boot() {
     WebApp: {
       ready() {}, expand() {},
       initData: 'query_id=test&user=%7B%22id%22%3A42%7D&auth_date=1700000000&hash=deadbeef',
+      // start_param: how Telegram passes the deep link's ?startapp= when
+      // a garden link is tapped as text (t.me/givethanksbot?startapp=...).
+      initDataUnsafe: startParam ? { start_param: startParam } : {},
       HapticFeedback: { impactOccurred() {} },
       CloudStorage: {
         getItem: (k, cb) => setTimeout(() => cb(null, cloud.has(k) ? cloud.get(k) : null), 0),
@@ -126,5 +129,21 @@ function boot() {
   assert.ok(recap.textContent.includes('🌷') && recap.textContent.includes('🌻'),
     'recap list must show each note’s plant');
 
-  console.log('garden v5.5: all tests pass (gardens sync into the 1:1 app, picker tap saves, my-count link, in-app recap)');
+  // 6. Deep link: a garden opened from a t.me link (start_param, no
+  //    ?startapp= in the URL) must open that garden, not the setup line.
+  //    A raw Mini App URL pasted as text opens in the browser (dab,
+  //    2026-11-17), so the link is a t.me deep link and the app must read
+  //    the garden from initDataUnsafe.start_param.
+  const b2 = boot('garden_' + GARDEN_ID);
+  await sleep(300);
+  b2.window.fetchServerState();
+  await sleep(300);
+  b2.window.switchTab('garden');
+  await sleep(300);
+  assert.notStrictEqual(b2.document.getElementById('groupGarden').style.display, 'none',
+    'a garden opened via start_param must show the group garden');
+  assert.ok(b2.document.getElementById('groupGardenTitle').textContent.includes('Test group'),
+    'the start_param garden must load, got: ' + b2.document.getElementById('groupGardenTitle').textContent);
+
+  console.log('garden v5.5: all tests pass (gardens sync into the 1:1 app, picker tap saves, my-count link, in-app recap, t.me deep link via start_param)');
 })().catch((e) => { console.error('garden v5.5 FAILED:', e.message); process.exit(1); });

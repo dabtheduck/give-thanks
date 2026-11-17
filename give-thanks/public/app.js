@@ -134,7 +134,22 @@ const state = {
   // gt_today_meta; reset on rollover (yesterday's pending entries are gone).
   adoptedBotIds: [],
 };
-try { state.gardenId = new URLSearchParams(location.search).get('startapp') ? new URLSearchParams(location.search).get('startapp').replace('garden_', '') : 'personal'; } catch (e) {}
+// Which garden to open: from ?startapp=garden_<id> in the URL, or from
+// Telegram's start_param (tg.initDataUnsafe.start_param). The second
+// matters because a garden link shared as text is a t.me deep link
+// (https://t.me/givethanksbot?startapp=garden_<id>) — Telegram launches
+// the Mini App with the start parameter in initDataUnsafe, and the URL
+// may not carry ?startapp= at all. Reading both means the garden opens
+// whether the link was a button or a pasted t.me link (dab, 2026-11-17:
+// the plain garden link opened as a browser tab instead of the Mini App).
+try {
+  let startParam = '';
+  try { startParam = new URLSearchParams(location.search).get('startapp') || ''; } catch (e) {}
+  if (!startParam) {
+    try { startParam = (window.Telegram && window.Telegram.WebApp && window.Telegram.WebApp.initDataUnsafe && window.Telegram.WebApp.initDataUnsafe.start_param) || ''; } catch (e) {}
+  }
+  state.gardenId = startParam ? String(startParam).replace('garden_', '') : 'personal';
+} catch (e) {}
 
 // ---- storage: CloudStorage with a 500ms timeout, localStorage fallback ----
 // Telegram's CloudStorage callbacks never fire outside the Telegram client,

@@ -112,6 +112,13 @@ Commands (`/thanks`, `/share`, `/garden`, `/sharerecap`, `/seegardens`, `/recap`
 - No version bump (data stays v5, cache bust v20261117q): `groupGardens` was already a settings field and already returned by `/api/state`; the merge is additive.
 - Test: `/tmp/gt-test/garden-v55.test.js` (jsdom 31.0.1, recreate with `npm install jsdom@31.0.1` in `/tmp/gt-test` — /tmp is ephemeral): gardens sync into the 1:1 app, a single garden auto-opens, the picker tap POSTs `/api/garden/plant` and confirms, the my-count line shows the personal count, and the in-app recap lists the shared notes with their plants. All pass.
 
+### 15. v5.5 addendum: the garden link opened in the browser, not the Mini App (2026-11-17)
+- The bug (dab): the garden link opened as a browser tab instead of the Telegram Mini App.
+- Root cause: the link sent as plain text (the fallback when the web_app button fails to send, in `/garden` and `/seegardens`) was the raw Mini App URL (`https://give-thanks.onrender.com/?startapp=garden_<id>`). A raw URL pasted in a chat is just a URL — Telegram has no way to know it is a Mini App, so it opens in the browser. The web_app BUTTON was fine (a button opens the Mini App directly); only the pasted-text link was wrong.
+- The fix: plain-text garden links are now `t.me` deep links (`https://t.me/givethanksbot?startapp=garden_<id>`, built by `gardenDeepLink()` in server.js, using `bot.botInfo.username` with a `givethanksbot` fallback). Tapping one opens Telegram and launches the Mini App with the start parameter. The app now reads the garden from `tg.initDataUnsafe.start_param` as well as from `?startapp=` in the URL, because a deep link passes the start parameter through `initDataUnsafe` and the URL may not carry `?startapp=` at all. Buttons keep the raw Mini App URL.
+- No version bump (data stays v5, cache bust v20261117r): additive only — a new link format and a second place to read the garden id from.
+- Test: `garden-v55.test.js` gained a deep-link case — booting with `initDataUnsafe.start_param = 'garden_<id>'` and no `?startapp=` in the URL opens that garden (group garden shown, title loads). All pass.
+
 ## Adding a feature in v2.0 — checklist
 1. Add the flag to `lib/features.js`, default off.
 2. Add one file under `lib/` or `features/`. Do not edit the counter or recap core.
