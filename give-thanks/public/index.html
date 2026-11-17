@@ -8,8 +8,8 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800;900&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
-<script src="themes.js?v=20261117m"></script>
-<link rel="stylesheet" href="style.css?v=20261117m">
+<script src="themes.js?v=20261117n"></script>
+<link rel="stylesheet" href="style.css?v=20261117n">
 </head>
 <body>
 <div id="loadingCover" class="loading-cover">
@@ -49,19 +49,19 @@
        a group garden when opened from a group's /garden link. -->
   <section id="tab-garden" class="tab">
     <h2>🌸 The Garden</h2>
-    <div id="personalGarden">
-      <p class="calm">Anonymous, opt-in. Each thanks adds a flower. No names, no likes, no ranking.</p>
-      <label class="toggle"><input type="checkbox" id="gardenOptIn"> Join the personal garden</label>
-      <div class="garden-field" id="gardenField">🌱 Your garden is waiting for its first thanks today.</div>
-      <p class="calm" id="gardenCount">0 flowers bloomed today</p>
-    </div>
-    <div id="groupGarden" style="display:none">
+    <div id="groupGarden">
       <h3 id="groupGardenTitle">Group garden</h3>
       <p class="calm" id="groupGardenStatus">Loading the garden…</p>
       <div class="garden-plot" id="groupGardenPlot"></div>
       <p class="calm">Tap a plant to read its thanks. Only shared thanks appear here — no names, just the plant of the person who shared it.</p>
       <h3 class="list-heading">Your plant <span class="list-note">tap one to pick it — this is how the group tells you apart</span></h3>
       <div class="plant-picker" id="plantPicker"></div>
+      <p class="calm" id="plantStatus"></p>
+    </div>
+    <div id="gardenList" style="display:none"></div>
+    <div id="gardenSetup" style="display:none">
+      <p class="calm">No group gardens yet 🌱</p>
+      <p>To set one up: add Give Thanks to a Telegram group, then type <code>/garden</code> in the group. Shared thanks from the group will grow as plants here.</p>
     </div>
   </section>
 
@@ -101,6 +101,6 @@
     </div>
   </div>
 </div>
-<script src="app.js?v=20261117m"></script>
+<script src="app.js?v=20261117n"></script>
 </body>
 </html>

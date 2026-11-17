@@ -14,7 +14,10 @@ body{margin:0;background:var(--cream);color:var(--ink);font-family:"Nunito",-app
 header{display:flex;justify-content:space-between;align-items:center;background:var(--deep);color:#fff;margin:0 -16px;padding:14px 18px;border-radius:0 0 18px 18px}
 .logo{font-family:"Space Mono","Courier New",monospace;font-weight:900;letter-spacing:1px;font-size:19px}
 .date{font-size:12px;background:rgba(255,255,255,.18);color:#fff;padding:5px 10px;border-radius:999px}
-.tab{display:none;padding-top:16px}
+.tab{display:none;padding-top:16px;padding-bottom:80px}
+/* The tab bar is fixed to the bottom of the screen — without bottom
+   padding, the last bit of content (the plant picker) sits underneath
+   it and can't be tapped. That was the picker bug (dab, 2026-11-17). */
 .tab.active{display:block}
 h2{font-family:"Space Mono","Courier New",monospace;margin:6px 0 10px;font-size:20px}
 h3{font-family:"Space Mono","Courier New",monospace;margin:0 0 8px;font-size:16px}
@@ -70,13 +73,17 @@ h3{font-family:"Space Mono","Courier New",monospace;margin:0 0 8px;font-size:16p
 .notes li{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px 14px;margin:8px 0;box-shadow:0 1px 5px rgba(30,42,34,.05);line-height:1.45}
 .share-check{font-size:13px;color:var(--forest);float:right}
 .delete-note{float:right;background:none;border:none;color:var(--muted);font-size:20px;line-height:1;padding:0 6px;margin-left:4px;cursor:pointer;border-radius:8px}
+.edit-note{float:right;background:none;border:none;color:var(--muted);font-size:16px;line-height:1;padding:2px 6px;margin-left:2px;cursor:pointer;border-radius:8px}
+.note-text{cursor:pointer}
+.note-empty{color:var(--stone);font-style:italic}
+.note-edit-input{width:100%;padding:10px;border:1px solid var(--forest);border-radius:10px;background:#fff;font-size:15px;font-family:inherit}
+.garden-open-btn{display:block;width:100%;padding:12px;margin:8px 0;background:var(--card);border:1px solid var(--line);border-radius:12px;font-size:15px;cursor:pointer;text-align:left}
 .delete-note:hover{color:#B3261E;background:#FBEDEA}
 .share-check input{accent-color:var(--forest)}
 .private-note{filter:blur(1px);opacity:.65}
 .share-preview{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px;margin:12px 0;white-space:pre-wrap;line-height:1.55;box-shadow:0 1px 5px rgba(30,42,34,.05)}
 #tab-share .small-btn{background:var(--sienna);margin:4px 4px 4px 0;display:inline-block}
 .sync{font-size:12px;color:var(--stone);text-align:center;margin-top:16px}
-.garden-field{font-size:28px;line-height:1.4;background:var(--sage-soft);border:1px solid #D6E8CF;border-radius:16px;padding:16px;min-height:120px;margin:12px 0}
 .toggle{display:block;margin:12px 0;font-size:15px}
 label{display:block;margin:14px 0;font-weight:600}
 select,input[type=text]{width:100%;padding:11px;border:1px solid var(--line);margin-top:6px;background:#fff;border-radius:10px}

@@ -85,6 +85,13 @@ Commands (`/thanks`, `/share`, `/garden`, `/sharerecap`, `/seegardens`, `/recap`
 - Pure module: `lib/announce.js` (`formatAnnouncement` — the "🌱 Give Thanks — update" header — and `collectRecipients` — every known user's 1:1 chat id, deduped). The send loop itself lives in `server.js` (it calls `bot.telegram.sendMessage` per chat, with a per-chat try/catch so one blocked user never stops the rest).
 - No version bump (data stays v5): the announcement flow is transient state only (`awaitingAnnouncement`, in-memory, like `awaitingAbout`).
 
+### 12. v5.3 example: bare presses as editable items + picker fix + no personal garden (2026-11-17)
+- Every press is a list item now — even a bare press with no note, so it shows in Today's list as "add a note…" and the note can be added later by tapping the item (or the ✏️) to edit it inline (Enter saves, Esc cancels, leaving the field saves too). The share tick only appears once a note has text. Notes with no text are left out of the recap, the share text, and the share preview (the count still includes them). A bare `/thanks` in the bot chat merges the same way.
+- Plant picker fix: the fixed tab bar at the bottom of the screen was covering the picker (the `.tab` content had no bottom padding), so taps landed on the tab bar instead of the plant buttons. Fixed with `padding-bottom: 80px` on `.tab`. The picker now also shows a status line ("Your plant: 🌷 Tulip") and says so if a pick fails to save, instead of failing silently.
+- Random fallback plant: a member who hasn't picked gets a random plant, assigned once and saved (`plantChoices`), so it sticks instead of changing on every load. `lib/plants.js` gained `randomPlant()`; the deterministic default is gone.
+- Personal garden deleted: gardens are group features. The Garden tab shows a group garden when opened from a group's `/garden` link, the user's group gardens (or just opens the one garden) when opened normally, or a setup line ("add Give Thanks to a Telegram group, then type /garden") if they have none. `GET /api/garden` with `gardenId=personal` now 400s, and `/api/sync` no longer plants notes into a 'personal' garden.
+- Dates are shown as DD-MM-YYYY (dab, 2026-11-17). Dates are stored as YYYY-MM-DD — only what the user sees is reformatted (`displayDate` in `lib/recap.js`, `formatDateDisplay` in `public/app.js`).
+
 ## Adding a feature in v2.0 — checklist
 1. Add the flag to `lib/features.js`, default off.
 2. Add one file under `lib/` or `features/`. Do not edit the counter or recap core.

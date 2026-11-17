@@ -27,7 +27,7 @@ const FIXED_NOTIFY_HOUR = 19;
 const FIXED_NOTIFY_MINUTE = 30;
 
 // FNV-1a, tiny and deterministic. The Mini App duplicates this (it can't
-// require server code); keep the two in sync. Also in lib/plants.js.
+// require server code); keep the two in sync.
 function hashStr(s) {
   let h = 2166136261;
   const str = String(s);

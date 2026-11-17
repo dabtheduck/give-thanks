@@ -14,14 +14,17 @@
 // v5.2 (2026-11-17): /send_announcement (owner-only, 1:1 chats only,
 // two-step like /edit_about) — the owner can update every user about
 // new things. No group posts.
+// v5.3 (2026-11-17): bare +thanks presses are list items (editable
+// later); plant picker fixed + random fallback plant that sticks;
+// personal garden deleted — gardens are group-only.
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const express = require('express');
 const { Telegraf, Markup } = require('telegraf');
 const { CURRENT_VERSION, migrateUser, migrateToday, FIXED_RESET_HOUR, FIXED_RESET_MINUTE, FIXED_NOTIFY_HOUR, FIXED_NOTIFY_MINUTE } = require('./lib/migrations');
-const { formatRecap, buildShareText, staleNotice, notSyncedNotice, recapStatus } = require('./lib/recap');
-const { PLANTS, plantById, defaultPlantFor } = require('./lib/plants');
+const { formatRecap, buildShareText, staleNotice, notSyncedNotice, recapStatus, displayDate } = require('./lib/recap');
+const { PLANTS, plantById, randomPlant } = require('./lib/plants');
 const { mergeSync } = require('./lib/merge');
 const { createGardenStore, getGarden, rolloverGarden, pruneGarden, addGardenNote } = require('./lib/garden');
 const { formatAnnouncement, collectRecipients } = require('./lib/announce');
@@ -175,7 +178,19 @@ function plantFor(userId, gardenId) {
   const pick = u && u.plantChoices && u.plantChoices[String(gardenId)];
   const p = plantById(pick);
   if (p) return p;
-  return defaultPlantFor(userId);
+  // No choice yet: give them a random plant and save it, so it sticks
+  // (dab, 2026-11-17: "a default randomized fall back plant"). A fresh
+  // random pick on every read would reshuffle the garden each time it
+  // loads. If there's no user record to save it on (e.g. after a
+  // redeploy wiped data.json), return a random one unsaved — it settles
+  // once they sync and get a record again.
+  const random = randomPlant();
+  if (u) {
+    if (!u.plantChoices || typeof u.plantChoices !== 'object') u.plantChoices = {};
+    u.plantChoices[String(gardenId)] = random.id;
+    saveSettings();
+  }
+  return random;
 }
 
 // ---- Telegram initData validation ----
@@ -352,7 +367,7 @@ bot.command('sharerecap', async (ctx) => {
   rolloverGarden(g, day);
   pruneGarden(g);
   if (!g.notes.length) return ctx.reply('No shared thanks in this group yet today — tap + thanks in the app and tick share to plant one 🌱');
-  const lines = [`🌱 Give Thanks — ${day}`, ``, `${g.notes.length} shared thanks in this group today.`, ``];
+  const lines = [`🌱 Give Thanks — ${displayDate(day)}`, ``, `${g.notes.length} shared thanks in this group today.`, ``];
   for (const n of g.notes) {
     const p = plantFor(n.userId, String(ctx.chat.id));
     lines.push(`${p.emoji} ${n.text}`);
@@ -471,7 +486,7 @@ const app = express();
 app.use(express.json({ limit: '200kb' }));
 // No-store for app assets: the live counter once stayed broken because browsers /
 // Telegram WebView kept serving a cached pre-fix app.js after a redeploy.
-// (index.html also loads app.js/style.css/themes.js with ?v=20261117m.)
+// (index.html also loads app.js/style.css/themes.js with ?v=20261117n.)
 app.use(express.static(path.join(__dirname, 'public'), {
   maxAge: 0, etag: false,
   setHeaders(res, filePath) { if (/\.(js|css|html)$/.test(filePath)) res.set('Cache-Control', 'no-store'); },
@@ -534,7 +549,9 @@ app.post('/api/sync', (req, res) => {
       // resets every day at 03:00 (v5.1, no 7-day window).
       const gardenIds = new Set();
       if (Array.isArray(u.groupGardens)) for (const gid of u.groupGardens) gardenIds.add(String(gid));
-      if (req.body.gardenId) gardenIds.add(String(req.body.gardenId));
+      // 'personal' is not a garden (v5.3 — the personal garden was
+      // deleted); only real group ids get notes planted in them.
+      if (req.body.gardenId && String(req.body.gardenId) !== 'personal') gardenIds.add(String(req.body.gardenId));
       for (const gid of gardenIds) {
         for (const n of u.today.notes) addGardenNote(gardens, gid, userId, { ...n, date: u.today.date });
       }
@@ -597,11 +614,10 @@ app.post('/api/about', (req, res) => {
 });
 
 app.get('/api/garden', async (req, res) => {
-  const gid = String(req.query.gardenId || 'personal');
-  if (gid === 'personal') {
-    let total = 0; for (const u of users.values()) if (u.gardenOptIn) total += u.today.count;
-    return res.json({ ok: true, gardenId: gid, countToday: total, flowers: Math.min(total, 200) });
-  }
+  const gid = String(req.query.gardenId || '');
+  // Gardens are group-only (dab, 2026-11-17) — the personal garden was
+  // deleted in v5.3. A gardenId of 'personal' (or none) is a bad request.
+  if (!gid || gid === 'personal') return res.status(400).json({ ok: false, error: 'gardens are for groups — open one from a group chat' });
   // Group garden (v5): only members may see it. Needs real initData (a
   // Mini App launch) — a plain link opened in a browser has none, so it
   // 401s, and the app tells the user to open it from the group's button.

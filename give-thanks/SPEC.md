@@ -30,12 +30,12 @@ Each user's 1:1 chat with the bot is their identity. No username, email, or pass
 All in one Mini App, bottom tabs: Counter | Garden | Share | About
 
 ### 3.1 Counter (home / first screen)
-- Today's date, in the user's timezone.
+- Today's date, in the user's timezone, shown as DD-MM-YYYY (dab, 2026-11-17). Dates are stored as YYYY-MM-DD (it sorts and compares correctly) — only what the user sees is reformatted.
 - Large count for today, in chunky pixel numerals.
 - Big press button, at least 120px, centre screen.
 - Note input under the button, placeholder: “What are you thankful for? (optional)”
 - “Add note to last press” behaviour: if you type a note without pressing, it attaches to the most recent press. If you type then press +, it creates a new press with that note.
-- Today's notes list below, newest first, each with its press number (#1, #2…), time, and text. Tap a note to edit / delete it before reset.
+- Today's notes list below, newest first, each with its press number (#1, #2…), time, and text. Tap a note to edit / delete it before reset. A press with no note shows as "add a note…" — tap it to add the note later (v5.3).
 - Small, calm progress visual: a pixel plant / lantern that grows slightly with count, but with no target number and no “goal reached” pressure. It just grows.
 - Settings gear top-right, Garden and Science via bottom tabs.
 
@@ -75,13 +75,13 @@ Sharing is opt-in per note, not per day. Default is private.
 - This is a v3 feature, behind the `shareOutsideTelegram` flag in `lib/features.js`, default on for new installs, and migrated safely: see UPGRADES.md and `lib/migrations.js` (v2 → v3 adds `shareable: false` to old notes).
 
 ### 3.4 Garden (community, anonymous, opt-in)
-**Live in v5 (2026-11-17).** The Garden tab shows your personal garden by default, or a group garden when opened from a group's `/garden` link.
+**Live in v5 (2026-11-17), group-only in v5.3.** The Garden tab shows a group garden when opened from a group's `/garden` link, or the user's group gardens (or how to set one up) when opened normally. The personal garden was deleted in v5.3 — gardens are group features.
 - Personal Garden: if opted in, each of your thanks adds an anonymous flower / pixel plant to a shared garden. No names, no note text shown by default.
 - Group Garden: a garden just for one Telegram group.
   - How to create: add @GiveThanksBot to a group, send `/garden` in the group. The bot posts a message in the group with a button to open the garden, plus the plain link as a fallback (a bad button URL can fail the whole send silently, so the link is the safety net).
   - What it looks like: a cute plot of land. One plant per shared thanks, placed at a stable spot (position comes from the note's id, so the plot doesn't reshuffle). Tap a plant and its note opens in a bubble card, with a haptic pop.
   - Who can see it: only members of that group. The server checks membership via `getChatMember` on every load; if it can't confirm, access is denied (safe default).
-  - What is shared: only thanks with the share box ticked. No names — each member picks one of 10 plant designs to represent themselves (Sunflower, Tulip, Rose, Daisy, Cactus, Fern, Mushroom, Clover, Bamboo, Hyacinth), changeable any time. A member who hasn't picked yet gets a deterministic default from their user id. The plant is the identity: somewhat anonymous, but not entirely.
+  - What is shared: only thanks with the share box ticked. No names — each member picks one of 10 plant designs to represent themselves (Sunflower, Tulip, Rose, Daisy, Cactus, Fern, Mushroom, Clover, Bamboo, Hyacinth), changeable any time. A member who hasn't picked yet gets a random plant, assigned once and saved, so it sticks. The plant is the identity: somewhat anonymous, but not entirely.
   - How long it grows: one day. The garden resets at 03:00 with the counter — a fresh garden each morning. The garden is stored in memory on the server (like today's notes) — a restart or redeploy empties it, and it rebuilds as members open the app and sync, but since it resets every day anyway, a redeploy just resets it early. The user's list of gardens and their plant choices are persisted (data.json), so a garden is re-discoverable after a restart.
   - `/seegardens` in a 1:1 chat lists all your group gardens, with a button to open each.
   - `/sharerecap` in a group posts today's shared thanks, each with the member's plant emoji, no names.
@@ -235,7 +235,7 @@ This is a hard requirement, not a nice-to-have. A v1.0 user must open v2.0 and s
 ### 13.2 Data versioning
 - Client: `gt_settings` now stores `{ version: 5, timezone, ... }` — v4 dropped `resetHour` / `notifyHour`. `gt_today_meta` stores `{ version: 5, date, count, pressHistory, adoptedBotIds }`. Old v1 records with no `version` are treated as version 1.
 - Server: `data.json` records store `{ version: 5, ... }`. `lib/migrations.js:migrateUser()` upgrades v1 → v5: notes gain stable ids (v5, deterministic from text+time for old notes), users gain `pendingBot: []` and `plantChoices: {}` (v5.1: `lastSyncDate: null`, set on every successful sync).
-- Pure modules (v5, each with its own test): `lib/recap.js` (recap/share text + staleness notice + not-synced prompt), `lib/merge.js` (bot/app merge), `lib/plants.js` (10 species + deterministic defaults), `lib/garden.js` (garden store, daily reset, dedup).
+- Pure modules (v5, each with its own test): `lib/recap.js` (recap/share text + staleness notice + not-synced prompt + DD-MM-YYYY display), `lib/merge.js` (bot/app merge), `lib/plants.js` (10 species + random fallback), `lib/garden.js` (garden store, daily reset, dedup).
 - CloudStorage keys are namespaced and never reused for a different shape: `gt_today_notes_1` stays notes. A new feature gets a new key, e.g. `gt_garden_weekly_1`, never overwrites an old one.
 - Today's notes are still ephemeral (a new day starts at 03:00), but *settings* and *garden membership* are durable and must survive upgrades.
 

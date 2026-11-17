@@ -1,9 +1,9 @@
 // Run: node lib/plants.test.js
 // Tests the v5 garden plant species (dab, 2026-11-17): 10 designs, one
-// per member per group garden; a member who hasn't picked gets a
-// deterministic default from their user id.
+// per member per group garden; a member who hasn't picked gets a random
+// fallback plant (v5.3 — was a deterministic default from their user id).
 const assert = require('assert');
-const { PLANTS, plantById, defaultPlantFor } = require('./plants');
+const { PLANTS, plantById, randomPlant } = require('./plants');
 
 assert.strictEqual(PLANTS.length, 10, 'exactly 10 plant designs');
 const ids = new Set(PLANTS.map((p) => p.id));
@@ -17,13 +17,10 @@ for (const p of PLANTS) {
 assert.strictEqual(plantById('sunflower').emoji, '🌻');
 assert.strictEqual(plantById('nope'), null);
 
-// Default plant is deterministic: same user, same plant, every time.
-const a = defaultPlantFor(123456789);
-const b = defaultPlantFor(123456789);
-assert.strictEqual(a.id, b.id);
-assert.ok(plantById(a.id), 'default plant must be one of the 10');
-// Different users get a spread of plants, not all the same one.
-const spread = new Set([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map((id) => defaultPlantFor(id).id));
-assert.ok(spread.size > 1, 'defaults should vary across users');
+// Random fallback: always one of the 10, and varied across calls
+// (not the same plant for everyone).
+assert.ok(plantById(randomPlant().id), 'random plant must be one of the 10');
+const spread = new Set(Array.from({ length: 30 }, () => randomPlant().id));
+assert.ok(spread.size > 1, 'random fallback should vary, not give everyone the same plant');
 
-console.log('plants: all plant tests pass (10 designs, deterministic defaults)');
+console.log('plants: all plant tests pass (10 designs, random fallback)');

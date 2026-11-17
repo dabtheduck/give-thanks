@@ -106,6 +106,14 @@ function todayKey(d, tz) {
   }
   return get('year') + '-' + get('month') + '-' + get('day');
 }
+// Display dates as DD-MM-YYYY (dab, 2026-11-17). The day key itself
+// stays YYYY-MM-DD (it sorts and compares correctly) — only what the
+// user sees is reformatted. Anything that isn't YYYY-MM-DD is left alone.
+function formatDateDisplay(iso) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(iso || ''));
+  if (!m) return String(iso || '');
+  return m[3] + '-' + m[2] + '-' + m[1];
+}
 function timeNow() {
   try { return new Intl.DateTimeFormat('en-GB', { timeZone: state.settings.timezone, hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date()); }
   catch (e) { return ''; }
@@ -351,7 +359,6 @@ async function loadSettings() {
   const tzLabel = el('tzLabel'); if (tzLabel) tzLabel.textContent = state.settings.timezone;
   const nOn = el('notificationsOn'); if (nOn) nOn.checked = state.settings.notificationsOn;
   const nEmpty = el('notifyOnlyIfEmpty'); if (nEmpty) nEmpty.checked = state.settings.notifyOnlyIfEmpty;
-  const gOpt = el('gardenOptIn'); if (gOpt) gOpt.checked = state.settings.gardenOptIn;
   render();
 }
 async function saveSettings() {
@@ -420,12 +427,11 @@ async function fetchServerState() {
     for (const e of pending) {
       if (!e || !e.id) continue;
       if (state.adoptedBotIds.includes(String(e.id))) continue;
-      if (e.text) {
-        state.today.notes.push({ text: String(e.text).slice(0, 140), time: String(e.time || ''), shareable: false, id: String(e.id), origin: 'bot' });
-        state.pressHistory.push(true);
-      } else {
-        state.pressHistory.push(false);
-      }
+      // Every press is a list item now (dab, 2026-11-17) — a bare bot
+      // thanks (no text) becomes an empty note the user can edit later,
+      // just like a bare press in the app.
+      state.today.notes.push({ text: e.text ? String(e.text).slice(0, 140) : '', time: String(e.time || ''), shareable: false, id: String(e.id), origin: 'bot' });
+      state.pressHistory.push(true);
       state.today.count += 1;
       state.adoptedBotIds.push(String(e.id));
       changed = true;
@@ -488,28 +494,20 @@ function plantIndex(count) { return Math.min(Math.floor(count / 3), PLANTS.lengt
 function escapeHtml(s) { return String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
 function render() {
   try {
-    setText('todayDate', state.today.date);
+    setText('todayDate', formatDateDisplay(state.today.date));
     setText('count', String(state.today.count));
     setText('countLabel', state.today.count === 1 ? 'thank today' : 'thanks today');
     setText('plant', PLANTS[plantIndex(state.today.count)]);
     setText('plantStage', STAGES[plantIndex(state.today.count)] + ' • ' + state.today.count + ' thanks today');
     const list = el('notesList');
-    if (list) {
-      list.innerHTML = state.today.notes.map((n, i) => '<li><button class="delete-note" data-delete="' + i + '" title="Delete this thanks" aria-label="Delete this thanks">×</button><label class="share-check"><input type="checkbox" data-share="' + i + '"' + (n.shareable ? ' checked' : '') + '> share</label> <b>#' + (i + 1) + '</b> ' + escapeHtml(n.time || '') + ' — <span class="' + (n.shareable ? '' : 'private-note') + '">' + escapeHtml(n.text) + '</span></li>').reverse().join('');
-      list.querySelectorAll('input[data-share]').forEach(cb => cb.addEventListener('change', (e) => {
-        const idx = parseInt(e.target.dataset.share, 10);
-        state.today.notes[idx].shareable = e.target.checked;
-        saveTodayBackground(); syncToServer(); renderSharePreview();
-      }));
-      list.querySelectorAll('button[data-delete]').forEach(btn => btn.addEventListener('click', (e) => {
-        deleteNote(parseInt(e.currentTarget.dataset.delete, 10));
-      }));
+    // While a note is being edited inline, the list is left alone, so the
+    // text the user is typing is never wiped out by a re-render. The edit
+    // input is built by notesListHtml() when editingIdx is set.
+    if (list && editingIdx < 0) {
+      list.innerHTML = notesListHtml();
     }
     const undoBtn = el('undoBtn');
     if (undoBtn) undoBtn.style.display = state.today.count > 0 ? '' : 'none';
-    setText('gardenCount', state.today.count + ' flowers bloomed today (personal view)');
-    const field = el('gardenField');
-    if (field) field.textContent = state.today.count ? '🌸 '.repeat(Math.min(state.today.count, 30)) : '🌱 Your garden is waiting for its first thanks today.';
     renderGardenTab();
     renderSharePreview();
   } catch (e) { showError('Something went wrong showing your thanks — try pressing again.'); }
@@ -538,7 +536,19 @@ const GARDEN_PLANTS_FALLBACK = [
 const groupGarden = { title: '', notes: [], myPlant: '', plants: GARDEN_PLANTS_FALLBACK, memberCount: 0, loaded: false, error: '' };
 
 async function loadGarden() {
-  if (state.gardenId === 'personal') { renderGardenTab(); return; }
+  // Gardens are group-only (dab, 2026-11-17) — the personal garden was
+  // deleted in v5.3. If the app was opened without a garden (menu button),
+  // show the user's group gardens — or how to set one up if there are none.
+  if (state.gardenId === 'personal') {
+    const gardens = Array.isArray(state.settings.groupGardens) ? state.settings.groupGardens.map(String) : [];
+    if (gardens.length === 1) {
+      // One garden: just open it.
+      state.gardenId = gardens[0];
+    } else {
+      renderGardenTab();
+      return;
+    }
+  }
   if (!tg || !tg.initData) {
     // Opened from a plain link, not as a Mini App — no initData, so the
     // server can't confirm membership. Tell them how to open it properly.
@@ -558,6 +568,7 @@ async function loadGarden() {
     groupGarden.memberCount = j.memberCount || 0;
     groupGarden.loaded = true;
     groupGarden.error = '';
+    plantStatusMsg = ''; // a fresh load clears any stale pick message
   } catch (e) {
     groupGarden.error = String((e && e.message) || e || 'Couldn’t load the garden — try again in a bit.');
     groupGarden.loaded = false;
@@ -573,13 +584,27 @@ function gardenPlantPos(id) {
 }
 
 function renderGardenTab() {
-  const personal = el('personalGarden');
   const group = el('groupGarden');
-  if (!personal || !group) return;
+  const list = el('gardenList');
+  const setup = el('gardenSetup');
+  if (!group || !list || !setup) return;
   const isGroup = state.gardenId !== 'personal';
-  personal.style.display = isGroup ? 'none' : '';
+  const gardens = Array.isArray(state.settings.groupGardens) ? state.settings.groupGardens : [];
   group.style.display = isGroup ? '' : 'none';
-  if (!isGroup) return;
+  list.style.display = (!isGroup && gardens.length > 1) ? '' : 'none';
+  setup.style.display = (!isGroup && gardens.length === 0) ? '' : 'none';
+  if (!isGroup) {
+    // No garden open: a list of the user's gardens to open, or the setup
+    // line if they have none yet.
+    if (gardens.length > 1) {
+      list.innerHTML = '<h3>Your group gardens</h3><p class="calm">Tap one to open it.</p>' + gardens.map((gid) => '<button type="button" class="garden-open-btn" data-garden="' + escapeHtml(String(gid)) + '">🌸 Open group garden</button>').join('');
+      list.querySelectorAll('[data-garden]').forEach((b) => b.addEventListener('click', () => {
+        state.gardenId = b.dataset.garden;
+        loadGarden();
+      }));
+    }
+    return;
+  }
   setText('groupGardenTitle', groupGarden.title || 'Group garden');
   const status = el('groupGardenStatus');
   if (groupGarden.error) { if (status) status.textContent = groupGarden.error; }
@@ -620,6 +645,7 @@ function renderGardenTab() {
       picker.appendChild(b);
     }
   }
+  updatePlantStatus();
 }
 
 function openNoteBubble(note) {
@@ -629,7 +655,7 @@ function openNoteBubble(note) {
   if (!bubble) return;
   setText('noteBubblePlant', note.emoji || '🌱');
   setText('noteBubbleText', note.text || '');
-  setText('noteBubbleMeta', (note.plantName || 'A plant') + (note.date ? ' · ' + note.date : '') + (note.time ? ' · ' + note.time : ''));
+  setText('noteBubbleMeta', (note.plantName || 'A plant') + (note.date ? ' · ' + formatDateDisplay(note.date) : '') + (note.time ? ' · ' + note.time : ''));
   bubble.classList.add('open');
 }
 
@@ -638,29 +664,59 @@ function closeNoteBubble() {
   if (bubble) bubble.classList.remove('open');
 }
 
+// The plant status line under the picker: what your plant is, and
+// whether a pick saved. A custom message (saving / error) sticks until
+// the next successful garden load clears it.
+let plantStatusMsg = '';
+function plantName(id) {
+  const p = (groupGarden.plants || []).find((x) => x.id === id);
+  return p ? p.emoji + ' ' + p.name : '';
+}
+function updatePlantStatus() {
+  const node = el('plantStatus');
+  if (!node) return;
+  node.textContent = plantStatusMsg || (groupGarden.myPlant ? 'Your plant: ' + plantName(groupGarden.myPlant) : '');
+}
+function setPlantStatus(msg) { plantStatusMsg = msg || ''; updatePlantStatus(); }
+
 async function pickPlant(plantId) {
   if (!tg || !tg.initData) return;
+  const prev = groupGarden.myPlant;
   groupGarden.myPlant = plantId;
   renderGardenTab();
+  setPlantStatus('Your plant: ' + plantName(plantId) + ' — saving…');
   try { if (tg && tg.HapticFeedback) tg.HapticFeedback.impactOccurred('light'); } catch (e) {}
   try {
     const res = await fetch('/api/garden/plant', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ initData: tg.initData, gardenId: state.gardenId, plant: plantId }),
     });
-    if (res.ok) loadGarden();
-  } catch (e) {}
+    if (!res.ok) throw new Error('could not save');
+    setPlantStatus('Your plant: ' + plantName(plantId) + ' 🌱');
+    plantStatusMsg = '';
+    loadGarden();
+  } catch (e) {
+    // Revert the optimistic pick and say so — a silent failure is why
+    // the picker looked broken (dab, 2026-11-17).
+    groupGarden.myPlant = prev;
+    renderGardenTab();
+    setPlantStatus('Couldn’t save your plant — try again.');
+  }
 }
 function buildShareText() {
-  const lines = ['🌱 Give Thanks — ' + state.today.date, '', 'I said thanks ' + state.today.count + ' time' + (state.today.count === 1 ? '' : 's') + ' today.', ''];
-  state.today.notes.forEach((n, i) => lines.push((i + 1) + '. ' + (n.shareable ? n.text : '••• hidden •••')));
+  const lines = ['🌱 Give Thanks — ' + formatDateDisplay(state.today.date), '', 'I said thanks ' + state.today.count + ' time' + (state.today.count === 1 ? '' : 's') + ' today.', ''];
+  // Notes with no text yet (a bare press) have nothing to share or hide,
+  // so they are left out of the list. The count still includes them.
+  const noted = state.today.notes.filter((n) => String(n.text || '').trim().length > 0);
+  noted.forEach((n, i) => lines.push((i + 1) + '. ' + (n.shareable ? n.text : '••• hidden •••')));
   return lines.join('\n');
 }
 function renderSharePreview() {
   const node = el('sharePreview');
   if (!node) return;
-  const shared = state.today.notes.filter(n => n.shareable).length;
-  node.innerHTML = '<b>Preview — what will go out:</b><br>' + escapeHtml(buildShareText()).replace(/\n/g, '<br>') + '<br><span class="fine">' + shared + ' of ' + state.today.notes.length + ' notes shared, ' + (state.today.notes.length - shared) + ' blurred out. Unticked notes stay private.</span>';
+  const noted = state.today.notes.filter((n) => String(n.text || '').trim().length > 0);
+  const shared = noted.filter(n => n.shareable).length;
+  node.innerHTML = '<b>Preview — what will go out:</b><br>' + escapeHtml(buildShareText()).replace(/\n/g, '<br>') + '<br><span class="fine">' + shared + ' of ' + noted.length + ' notes shared, ' + (noted.length - shared) + ' blurred out. Unticked notes stay private.</span>';
 }
 async function shareAsMessage() {
   const text = buildShareText();
@@ -746,6 +802,46 @@ async function shareAsArt() {
     setArtStatus('Couldn’t share the image here — try “Share as message” instead.');
   }
 }
+// ---- Today's list: every press is an item, and any item's note can be
+// edited after the fact (dab, 2026-11-17). A bare press (no note) shows
+// as "add a note…" — tap it (or the ✏️) to add the note later. The share
+// tick only appears once a note has text (nothing to share before that).
+let editingIdx = -1; // index of the note being edited inline, -1 = none
+function notesListHtml() {
+  return state.today.notes.map((n, i) => {
+    const hasText = String(n.text || '').trim().length > 0;
+    if (i === editingIdx) {
+      return '<li><input type="text" class="note-edit-input" data-edit-input="' + i + '" value="' + escapeHtml(n.text || '') + '" maxlength="140" placeholder="Add a note…"> <span class="fine">Enter to save · Esc to cancel</span></li>';
+    }
+    const textHtml = hasText
+      ? '<span class="' + (n.shareable ? '' : 'private-note') + '">' + escapeHtml(n.text) + '</span>'
+      : '<span class="note-empty">add a note…</span>';
+    const shareHtml = hasText
+      ? '<label class="share-check"><input type="checkbox" data-share="' + i + '"' + (n.shareable ? ' checked' : '') + '> share</label>'
+      : '';
+    return '<li><button class="delete-note" data-delete="' + i + '" title="Delete this thanks" aria-label="Delete this thanks">×</button><button class="edit-note" data-edit="' + i + '" title="Edit this note" aria-label="Edit this note">✏️</button>' + shareHtml + ' <b>#' + (i + 1) + '</b> ' + escapeHtml(n.time || '') + ' — <span class="note-text" data-edit="' + i + '">' + textHtml + '</span></li>';
+  }).reverse().join('');
+}
+function startNoteEdit(i) {
+  if (!Number.isInteger(i) || i < 0 || i >= state.today.notes.length) return;
+  editingIdx = i;
+  const list = el('notesList');
+  if (list) list.innerHTML = notesListHtml();
+  const input = list ? list.querySelector('input[data-edit-input]') : null;
+  if (input) { input.focus(); try { input.setSelectionRange(input.value.length, input.value.length); } catch (e) {} }
+}
+function saveNoteEdit(i, newText) {
+  if (!Number.isInteger(i) || i < 0 || i >= state.today.notes.length) { editingIdx = -1; return; }
+  state.today.notes[i].text = String(newText || '').trim().slice(0, 140);
+  editingIdx = -1;
+  render();
+  saveTodayBackground();
+  syncToServer();
+}
+function cancelNoteEdit() {
+  editingIdx = -1;
+  render();
+}
 function pressIndexForNote(noteIdx) {
   // The press-history entry for the noteIdx-th note: the (noteIdx+1)-th
   // `true` in pressHistory (bare presses have no note to delete).
@@ -758,6 +854,7 @@ function pressIndexForNote(noteIdx) {
 function deleteNote(idx) {
   // Delete one specific thanks: remove its note and take 1 off the count.
   // Renders immediately, then saves/syncs in the background, like press().
+  editingIdx = -1; // deleting cancels any in-progress note edit
   if (!Number.isInteger(idx) || idx < 0 || idx >= state.today.notes.length) return;
   const pIdx = pressIndexForNote(idx);
   if (pIdx !== -1) state.pressHistory.splice(pIdx, 1);
@@ -771,6 +868,7 @@ function undoLastPress() {
   // Undo the most recent press. If it had a note, that note goes too;
   // if it was a bare press, only the count drops. Works after a reload as
   // well, because pressHistory is saved with the count.
+  editingIdx = -1; // undoing cancels any in-progress note edit
   if (state.today.count <= 0 || !state.pressHistory.length) return;
   const hadNote = state.pressHistory.pop();
   if (hadNote) state.today.notes.pop();
@@ -784,10 +882,13 @@ function press(noteText) {
   // the app was opened yesterday (2026-11-17: post-03:00 presses filed
   // under yesterday never showed in /recap).
   rolloverIfNeeded();
-  // Render FIRST, synchronously — never let storage/sync delay the visible count.
-  state.pressHistory.push(!!noteText);
+  editingIdx = -1; // a new press cancels any in-progress note edit
+  // Every press is a list item now (dab, 2026-11-17) — even a bare press
+  // with no note, so it shows up in Today's list and the note can be
+  // added later by editing the item.
+  state.pressHistory.push(true);
   state.today.count += 1;
-  if (noteText) state.today.notes.push({ text: noteText.slice(0, 140), time: timeNow(), shareable: false, id: newNoteId(), origin: 'app' });
+  state.today.notes.push({ text: noteText ? noteText.slice(0, 140) : '', time: timeNow(), shareable: false, id: newNoteId(), origin: 'app' });
   const btn = el('pressBtn');
   if (btn) { btn.classList.remove('pop'); void btn.offsetWidth; btn.classList.add('pop'); }
   render();
@@ -837,12 +938,46 @@ function attachListeners() {
     const tzLabel = el('tzLabel'); if (tzLabel) tzLabel.textContent = state.settings.timezone;
     state.today.date = todayKey(); render();
   });
-  const gardenOptIn = el('gardenOptIn');
-  if (gardenOptIn) gardenOptIn.addEventListener('change', async (e) => { state.settings.gardenOptIn = e.target.checked; await saveSettings(); render(); });
   const undoBtn = el('undoBtn');
   if (undoBtn) undoBtn.addEventListener('click', undoLastPress);
+  // Today's list: one delegated listener on the container, so the buttons
+  // keep working even though the list HTML is rebuilt on every render.
+  // Handles edit (✏️ / note text), delete (×), share tick, and the inline
+  // edit input (Enter saves, Esc cancels, leaving the field saves too).
+  const list = el('notesList');
+  if (list) {
+    list.addEventListener('click', (e) => {
+      const editEl = e.target.closest ? e.target.closest('[data-edit]') : null;
+      if (editEl) { startNoteEdit(parseInt(editEl.dataset.edit, 10)); return; }
+      const delEl = e.target.closest ? e.target.closest('[data-delete]') : null;
+      if (delEl) deleteNote(parseInt(delEl.dataset.delete, 10));
+    });
+    list.addEventListener('change', (e) => {
+      const cb = e.target.closest ? e.target.closest('input[data-share]') : null;
+      if (!cb) return;
+      const idx = parseInt(cb.dataset.share, 10);
+      if (!Number.isInteger(idx) || idx < 0 || idx >= state.today.notes.length) return;
+      state.today.notes[idx].shareable = cb.checked;
+      saveTodayBackground(); syncToServer(); renderSharePreview();
+    });
+    list.addEventListener('keydown', (e) => {
+      const input = e.target.closest ? e.target.closest('input[data-edit-input]') : null;
+      if (!input) return;
+      if (e.key === 'Enter') { e.preventDefault(); saveNoteEdit(parseInt(input.dataset.editInput, 10), input.value); }
+      else if (e.key === 'Escape') { e.preventDefault(); cancelNoteEdit(); }
+    });
+    list.addEventListener('focusout', (e) => {
+      const input = e.target.closest ? e.target.closest('input[data-edit-input]') : null;
+      if (!input) return;
+      // Save when the field loses focus (tapping elsewhere, or the app
+      // going to background). Guard: if the edit was already saved or
+      // cancelled, do nothing.
+      if (editingIdx >= 0) saveNoteEdit(parseInt(input.dataset.editInput, 10), input.value);
+    });
+  }
   const clearBtn = el('clearToday');
   if (clearBtn) clearBtn.addEventListener('click', () => {
+    editingIdx = -1; // clearing cancels any in-progress note edit
     state.today = { version: DATA_VERSION, date: state.today.date, count: 0, notes: [] };
     state.pressHistory = [];
     render(); saveTodayBackground(); syncToServer();
