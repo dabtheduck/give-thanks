@@ -9,13 +9,22 @@
 // Timezone is per-user, auto-detected from the device.
 // Upgrades: see UPGRADES.md — all data is versioned, migrated on read via lib/migrations.js,
 // new features are behind flags in lib/features.js. Never delete unknown fields.
+// v5 (2026-11-17): /thanks, /share, /garden, /sharerecap, /seegardens;
+// group gardens (daily reset, in-memory); note ids + bot/app merge.
+// v5.2 (2026-11-17): /send_announcement (owner-only, 1:1 chats only,
+// two-step like /edit_about) — the owner can update every user about
+// new things. No group posts.
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const express = require('express');
 const { Telegraf, Markup } = require('telegraf');
-const { CURRENT_VERSION, migrateUser, FIXED_RESET_HOUR, FIXED_RESET_MINUTE, FIXED_NOTIFY_HOUR, FIXED_NOTIFY_MINUTE } = require('./lib/migrations');
-const { isEnabled } = require('./lib/features');
+const { CURRENT_VERSION, migrateUser, migrateToday, FIXED_RESET_HOUR, FIXED_RESET_MINUTE, FIXED_NOTIFY_HOUR, FIXED_NOTIFY_MINUTE } = require('./lib/migrations');
+const { formatRecap, buildShareText, staleNotice, notSyncedNotice, recapStatus } = require('./lib/recap');
+const { PLANTS, plantById, defaultPlantFor } = require('./lib/plants');
+const { mergeSync } = require('./lib/merge');
+const { createGardenStore, getGarden, rolloverGarden, pruneGarden, addGardenNote } = require('./lib/garden');
+const { formatAnnouncement, collectRecipients } = require('./lib/announce');
 
 // ---- env (no dotenv dependency, tiny parser) ----
 function loadEnv() {
@@ -36,12 +45,17 @@ const PORT = parseInt(process.env.PORT || '3000', 10);
 if (!BOT_TOKEN) console.warn('[give-thanks] WARNING: BOT_TOKEN not set. Copy .env.example to .env first.');
 
 // ---- ephemeral store ----
-// users: Map<userId, { chatId, timezone, notificationsOn, notifyOnlyIfEmpty, gardenOptIn, groupGardens:Set, today:{date,count,notes[]}, lastRecap, lastNotifyDate, lastRecapDate, blocked }>
+// users: Map<userId, { chatId, timezone, notificationsOn, notifyOnlyIfEmpty, gardenOptIn, groupGardens, pendingBot:[{id,text,time}], plantChoices:{gardenId: plantId}, today:{date,count,notes[]}, lastRecap, lastNotifyDate, lastRecapDate, blocked }>
 // (lastRecap / lastNotifyDate / lastRecapDate are dormant leftovers from the
 // removed scheduler — kept in the record so old data still migrates cleanly.)
 const DATA_FILE = path.join(__dirname, 'data.json');
 const users = new Map();
-const gardens = new Map(); // groupId -> { title, members:Set, countToday, date }
+// The garden store lives in lib/garden.js (daily reset at 03:00,
+// in-memory only — a restart/redeploy empties it and it rebuilds from
+// syncs, but since it resets every day anyway, a redeploy just resets it
+// early). The user's groupGardens list + plantChoices ARE persisted
+// (data.json), so the garden itself is re-discoverable after a restart.
+const gardens = createGardenStore();
 
 function defaultUser(chatId) {
   return {
@@ -49,6 +63,14 @@ function defaultUser(chatId) {
     notificationsOn: true, notifyOnlyIfEmpty: true,
     gardenOptIn: false, groupGardens: [], features: { gardenWeeklyShare: false, newRecapFormat: false, shareOutsideTelegram: true },
     today: { version: CURRENT_VERSION, date: localDateStr(new Date(), 'Asia/Singapore'), count: 0, notes: [] },
+    // v5: bot-logged thanks the app hasn't picked up yet, and the user's
+    // chosen plant species per group garden. Both persist in data.json.
+    pendingBot: [],
+    plantChoices: {},
+    // v5.1: the app-day of the last successful /api/sync, in the user's
+    // timezone. Lets /recap and /share tell "not synced yet" apart from
+    // "genuinely empty". Null = never synced. Persisted in data.json.
+    lastSyncDate: null,
     lastRecap: null,
     lastNotifyDate: '', lastRecapDate: '', blocked: false,
   };
@@ -116,6 +138,46 @@ function serverDayStr(now, tz) {
   return parts.date;
 }
 
+// ---- garden + merge helpers (v5) ----
+function localTimeStr(now, tz) {
+  const p = localParts(now, tz);
+  return String(p.hour).padStart(2, '0') + ':' + String(p.minute).padStart(2, '0');
+}
+// The server's today can go stale (no sync since the 03:00 reset). Roll
+// it to the current app-day before reading or writing it, and drop any
+// pending bot thanks from the old day with it (they belonged to yesterday).
+function rolloverUserToday(u) {
+  const day = serverDayStr(new Date(), u.timezone);
+  if (u.today.date === day) return false;
+  u.today = { version: CURRENT_VERSION, date: day, count: 0, notes: [] };
+  u.pendingBot = [];
+  return true;
+}
+// When /thanks was logged in the bot chat but the app hasn't picked it
+// up yet, /recap and /share read a server copy that may be missing the
+// app's latest presses. Say so (dab, 2026-11-17).
+function staleSuffix(u, command) {
+  if (!u.pendingBot || !u.pendingBot.length) return '';
+  return '\n\n' + staleNotice(command);
+}
+// Only members of a group may see its garden. getChatMember throws when
+// the bot isn't in the group or Telegram is unreachable — deny on error.
+async function isGroupMember(groupId, userId) {
+  try {
+    const m = await bot.telegram.getChatMember(String(groupId), userId);
+    return m && m.status !== 'left' && m.status !== 'kicked';
+  } catch (e) { return false; }
+}
+// The plant shown for a member's notes: their pick, else a deterministic
+// default from their user id (so the garden is varied from the first note).
+function plantFor(userId, gardenId) {
+  const u = users.get(userId);
+  const pick = u && u.plantChoices && u.plantChoices[String(gardenId)];
+  const p = plantById(pick);
+  if (p) return p;
+  return defaultPlantFor(userId);
+}
+
 // ---- Telegram initData validation ----
 // BUG FOUND 2026-11-17 (dab reported "invalid initData" on the recap
 // button, and /api/sync had silently 401'd all along — which is why the
@@ -151,23 +213,7 @@ function validateInitData(initData) {
   } catch { return null; }
 }
 
-// ---- recap ----
-function formatRecap(user, dateLabel) {
-  const n = user.today.notes || [];
-  // v2 opt-in format lives behind a flag — default is the exact v1 format, so existing users see no change.
-  if (isEnabled(user, 'newRecapFormat')) {
-    const lines = [`🌱 Give Thanks — ${dateLabel}`, ``, `${user.today.count} thanks today.`, ``];
-    n.forEach((note, i) => lines.push(`• ${note.text}`));
-    return lines.join('\n');
-  }
-  if (!user.today.count && n.length === 0) {
-    return `🌱 Give Thanks — ${dateLabel}\n\nNo thanks logged today. That's okay — fresh start tomorrow.`;
-  }
-  const lines = [`🌱 Give Thanks — ${dateLabel}`, ``, `You said thanks ${user.today.count} time${user.today.count === 1 ? '' : 's'} today.`, ``];
-  n.forEach((note, i) => lines.push(`${i + 1}. ${note.time || ''} — ${note.text}`));
-  lines.push(``, `A fresh day starts now. No backlog, no guilt.`);
-  return lines.join('\n');
-}
+// ---- recap text lives in lib/recap.js (tested, not just eyeballed) ----
 function splitMessage(text, limit = 4000) {
   if (text.length <= limit) return [text];
   const out = []; let cur = '';
@@ -181,10 +227,10 @@ function splitMessage(text, limit = 4000) {
 const bot = new Telegraf(BOT_TOKEN);
 const openKeyboard = () => Markup.inlineKeyboard([[Markup.button.webApp('🌱 Open Give Thanks', MINI_APP_URL)]]);
 // ---- Owner-only commands ----
-// /recap and /edit_about are for the bot owner only, and hidden from the
-// menu (everyone else only sees /start). Admin: set ADMIN_USER_ID in
-// .env to your Telegram ID (from @userinfobot). If not set, the first
-// person to run an owner command in a 1:1 chat becomes admin.
+// /edit_about and /send_announcement are for the bot owner only, and
+// hidden from the menu. Admin: set ADMIN_USER_ID in .env to your
+// Telegram ID (from @userinfobot). If not set, the first person to run an
+// owner command in a 1:1 chat becomes admin.
 let adminId = process.env.ADMIN_USER_ID ? String(process.env.ADMIN_USER_ID) : null;
 function isAdmin(userId) {
   if (adminId) return String(userId) === adminId;
@@ -194,23 +240,27 @@ bot.start(async (ctx) => {
   const u = getUser(ctx.from.id, ctx.chat.id);
   u.blocked = false; saveSettings();
   await ctx.reply(
-    `Hey, welcome to Give Thanks 🌱\n\nPress the button, say thanks, add a little note if you like.\n\nYour day runs until 3am, so night owls can add thanks and look back over the list before bed — the counter resets at 3am, and we start fresh.\n\nWhenever you want your list saved here, tap “Send today’s recap to chat” in the app — it works any time.\n\nNo streaks. No pressure. Just one quiet habit.`,
+    `Hey, welcome to Give Thanks 🌱\n\nPress the button, say thanks, add a little note if you like.\n\nYour day runs until 3am, so night owls can add thanks and look back over the list before bed — the counter resets at 3am, and we start fresh.\n\nWhenever you want your list saved here, tap “Send today’s recap to chat” in the app — it works any time.\n\nYou can also just type /thanks followed by a note right here — it counts the same as pressing in the app.\n\nNo streaks. No pressure. Just one quiet habit.`,
     openKeyboard()
   );
 });
 bot.command('recap', async (ctx) => {
-  // Owner-only, hidden from the menu (like /edit_about). The owner keeps
-  // it as a quick check of what the server knows; everyone else gets a
-  // polite no. If no admin is set yet, the first person to run it in a
-  // 1:1 chat becomes admin — same claim rule as /edit_about.
-  // NOTE: this reads the server's today, which is ephemeral (a restart
-  // wipes it until the app re-syncs on open). The reliable recap is the
-  // app's "Send today's recap to chat" button (POST /api/recap), which
-  // sends the list the app itself holds.
-  if (ctx.chat.type === 'private' && !adminId) { adminId = String(ctx.from.id); console.log(`[give-thanks] Recap admin set to ${adminId}`); }
-  if (adminId && String(ctx.from.id) !== adminId) return ctx.reply('That one’s just for the bot owner 🌱');
+  // Everyone in 1:1 (v5 — no longer owner-only, dab 2026-11-17). Reads the
+  // server's today, which is ephemeral: a restart wipes it until the app
+  // re-syncs on open. The reliable recap is the app's "Send today's recap
+  // to chat" button (POST /api/recap), which sends the list the app holds.
+  // If /thanks was logged here but the app hasn't picked it up yet, say so.
+  // v5.1: if the app hasn't synced today at all, don't claim the day is
+  // empty — say to open the app so it syncs, then ask again.
   const u = getUser(ctx.from.id, ctx.chat.id);
-  const text = formatRecap(u, localDateStr(new Date(), u.timezone));
+  rolloverUserToday(u);
+  const day = localDateStr(new Date(), u.timezone);
+  let text;
+  if (recapStatus(u, day) === 'not-synced') {
+    text = notSyncedNotice('recap');
+  } else {
+    text = formatRecap(u, day) + staleSuffix(u, 'recap');
+  }
   if (ctx.chat.type === 'private') {
     for (const part of splitMessage(text)) await ctx.reply(part);
     return;
@@ -224,6 +274,119 @@ bot.command('recap', async (ctx) => {
   } catch (e) {
     // 403 = the bot can't DM them yet (they never tapped /start in 1:1).
     await ctx.reply('I couldn’t send it privately — tap /start in a 1:1 chat with me first, then try /recap again.');
+  }
+});
+
+// ---- /thanks, /share, /garden, /sharerecap, /seegardens (v5) ----
+bot.command('thanks', async (ctx) => {
+  // Log a thanks with a note, right here in the chat. 1:1 only — in a
+  // group the note would be visible to everyone, so it points to 1:1.
+  // The thanks lives on the server until the app opens and merges it in
+  // (pendingBot); /recap says so until then.
+  if (ctx.chat.type !== 'private') return ctx.reply('Please send /thanks in a 1:1 chat with me — your notes stay private there.');
+  const u = getUser(ctx.from.id, ctx.chat.id);
+  rolloverUserToday(u);
+  const noteText = (ctx.message.text || '').replace(/^\/thanks(@\w+)?\s*/, '').trim().slice(0, 140);
+  const entry = { id: 'bot-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 7), text: noteText || null, time: localTimeStr(new Date(), u.timezone) };
+  u.today.count += 1;
+  if (noteText) u.today.notes.push({ text: noteText, time: entry.time, shareable: false, id: entry.id, origin: 'bot' });
+  u.pendingBot.push(entry);
+  // Persist it now, not on the next sync: a /thanks should survive a
+  // server restart (data.json survives restarts). A redeploy still wipes
+  // data.json, so a /thanks not yet merged can be lost if a redeploy
+  // happens before the app opens — redeploy just after 03:00, when
+  // yesterday's pending thanks are stale anyway.
+  saveSettings();
+  await ctx.reply(noteText
+    ? `Logged 🌱 — “${noteText}”\nIt’ll show in the app next time you open it.`
+    : `Logged 🌱 +1 thanks.\nIt’ll show in the app next time you open it.`);
+});
+
+bot.command('share', async (ctx) => {
+  // The share-format list, in the chat: ticked notes shown, unticked as
+  // "••• hidden •••", total count true. 1:1 only — it's your personal list.
+  if (ctx.chat.type !== 'private') return ctx.reply('Please send /share in a 1:1 chat with me — it’s your personal list.');
+  const u = getUser(ctx.from.id, ctx.chat.id);
+  rolloverUserToday(u);
+  const day = localDateStr(new Date(), u.timezone);
+  // v5.1: same as /recap — if the app hasn't synced today, say so instead
+  // of "nothing to share".
+  if (recapStatus(u, day) === 'not-synced') return ctx.reply(notSyncedNotice('share'));
+  if (!u.today.count && !u.today.notes.length) return ctx.reply('Nothing to share yet — press + thanks first.');
+  const text = buildShareText(u.today, day) + staleSuffix(u, 'share');
+  for (const part of splitMessage(text)) await ctx.reply(part);
+});
+
+bot.command('garden', async (ctx) => {
+  // Grow a garden for this group: one plant per shared thanks, tap a
+  // plant to read its note. Group only. The bot replies with a button
+  // to open the garden, plus the plain link as a fallback — a bad button
+  // URL can fail the whole send silently (2026-11-17), so the link is
+  // the safety net.
+  if (ctx.chat.type === 'private') return ctx.reply('Run /garden in a group chat to grow a garden with its members.');
+  const gid = String(ctx.chat.id);
+  const g = getGarden(gardens, gid);
+  g.title = ctx.chat.title || 'Group garden';
+  g.members.add(ctx.from.id);
+  const u = getUser(ctx.from.id, ctx.chat.id);
+  if (!u.groupGardens.includes(gid)) { u.groupGardens.push(gid); saveSettings(); }
+  const url = MINI_APP_URL + '?startapp=garden_' + gid;
+  const text = `🌸 ${g.title} — group garden\n\nOne plant per shared thanks. Tap a plant to read its note. Only members of this group can see it, and only thanks with the share box ticked show up.\n\nPick your plant when you open it — that’s how the group tells you apart.`;
+  try {
+    await ctx.reply(text, Markup.inlineKeyboard([[Markup.button.webApp('🌱 Open the group garden', url)]]));
+  } catch (e) {
+    console.error('garden button failed, sending plain link', e.message);
+    await ctx.reply(text + '\n\n' + url);
+  }
+});
+
+bot.command('sharerecap', async (ctx) => {
+  // The group's shared recap: today's shared thanks, each with the
+  // member's plant emoji — no names. Group only.
+  if (ctx.chat.type === 'private') return ctx.reply('Run /sharerecap in a group chat to share the group’s thanks.');
+  const u = getUser(ctx.from.id, ctx.chat.id);
+  const day = serverDayStr(new Date(), u.timezone);
+  const g = getGarden(gardens, String(ctx.chat.id));
+  // v5.1: the garden is daily — roll it to the asker's day first, so
+  // yesterday's plants never show up in today's sharerecap.
+  rolloverGarden(g, day);
+  pruneGarden(g);
+  if (!g.notes.length) return ctx.reply('No shared thanks in this group yet today — tap + thanks in the app and tick share to plant one 🌱');
+  const lines = [`🌱 Give Thanks — ${day}`, ``, `${g.notes.length} shared thanks in this group today.`, ``];
+  for (const n of g.notes) {
+    const p = plantFor(n.userId, String(ctx.chat.id));
+    lines.push(`${p.emoji} ${n.text}`);
+  }
+  for (const part of splitMessage(lines.join('\n'))) await ctx.reply(part);
+});
+
+bot.command('seegardens', async (ctx) => {
+  // Your gardens, in 1:1: every group garden you're in, with a button
+  // to open each. If the buttons fail to send (bad URL fails the whole
+  // send, 2026-11-17), fall back to plain links.
+  if (ctx.chat.type !== 'private') return ctx.reply('Send /seegardens in a 1:1 chat with me.');
+  const u = getUser(ctx.from.id, ctx.chat.id);
+  if (!u.groupGardens.length) return ctx.reply('You’re not in any group gardens yet — add me to a group and run /garden there to start one.');
+  const lines = ['🌸 Your gardens', ''];
+  const buttons = [];
+  for (const gid of u.groupGardens) {
+    let title = getGarden(gardens, gid).title;
+    if (!title) {
+      try { const chat = await bot.telegram.getChat(gid); title = chat.title || ('Group ' + gid); } catch (e) { title = 'Group ' + gid; }
+    }
+    lines.push('• ' + title);
+    buttons.push([Markup.button.webApp('🌱 ' + title, MINI_APP_URL + '?startapp=garden_' + gid)]);
+  }
+  lines.push('', 'Tap one to open it. Only that group’s members can see its garden.');
+  try {
+    await ctx.reply(lines.join('\n'), Markup.inlineKeyboard(buttons));
+  } catch (e) {
+    console.error('seegardens buttons failed, sending plain links', e.message);
+    const links = u.groupGardens.map((gid) => {
+      const title = getGarden(gardens, gid).title || ('Group ' + gid);
+      return '• ' + title + '\n' + MINI_APP_URL + '?startapp=garden_' + gid;
+    });
+    await ctx.reply(['🌸 Your gardens', ''].concat(links).join('\n'));
   }
 });
 
@@ -244,6 +407,7 @@ bot.command('edit_about', async (ctx) => {
   if (ctx.chat.type !== 'private') return ctx.reply('Please send /edit_about in a 1:1 chat with me, not in a group.');
   if (adminId && String(ctx.from.id) !== adminId) return ctx.reply('Only the bot owner can edit the About page.');
   if (!adminId) { adminId = String(ctx.from.id); console.log(`[give-thanks] About admin set to ${adminId}`); }
+  awaitingAnnouncement.delete(ctx.from.id);
   awaitingAbout.set(ctx.from.id, true);
   const current = getAboutText();
   await ctx.reply(
@@ -251,17 +415,54 @@ bot.command('edit_about', async (ctx) => {
   );
 });
 bot.command('cancel', async (ctx) => {
-  if (awaitingAbout.delete(ctx.from.id)) await ctx.reply('Cancelled — About page unchanged.');
+  if (awaitingAnnouncement.delete(ctx.from.id)) return ctx.reply('Cancelled — no announcement sent.');
+  if (awaitingAbout.delete(ctx.from.id)) return ctx.reply('Cancelled — About page unchanged.');
+});
+
+// ---- Send an announcement to every user (owner-only, 1:1 chats only) ----
+// /send_announcement lets the owner update users about new things
+// (dab, 2026-11-17). Two-step, like /edit_about: type the command, then
+// send the announcement text as the next message. It goes to every known
+// user's 1:1 chat — no group posts, because anyone who uses the bot in a
+// group already has a 1:1 chat with it. Hidden from the menu.
+const awaitingAnnouncement = new Map(); // userId -> true
+bot.command('send_announcement', async (ctx) => {
+  if (ctx.chat.type !== 'private') return ctx.reply('Please send /send_announcement in a 1:1 chat with me, not in a group.');
+  if (adminId && String(ctx.from.id) !== adminId) return ctx.reply('Only the bot owner can send announcements.');
+  if (!adminId) { adminId = String(ctx.from.id); console.log(`[give-thanks] Announcement admin set to ${adminId}`); }
+  awaitingAbout.delete(ctx.from.id);
+  awaitingAnnouncement.set(ctx.from.id, true);
+  await ctx.reply(
+    `Okay, send me the announcement text as your next message.\n\nI'll send it to everyone who uses the bot, in their 1:1 chat with me — no group posts. Send /cancel to stop without sending anything.`,
+  );
 });
 bot.on('text', async (ctx, next) => {
-  if (!awaitingAbout.has(ctx.from.id)) return next();
+  const awaitingA = awaitingAbout.has(ctx.from.id);
+  const awaitingN = awaitingAnnouncement.has(ctx.from.id);
+  if (!awaitingA && !awaitingN) return next();
   if (ctx.message.text.startsWith('/')) return next();
-  awaitingAbout.delete(ctx.from.id);
-  if (!isAdmin(ctx.from.id)) return ctx.reply('Only the bot owner can edit the About page.');
+  if (awaitingA) {
+    awaitingAbout.delete(ctx.from.id);
+    if (!isAdmin(ctx.from.id)) return ctx.reply('Only the bot owner can edit the About page.');
+    const text = ctx.message.text.trim();
+    if (text.length < 3) return ctx.reply('That looks too short — send /edit_about again and paste the full text.');
+    setAboutText(text);
+    await ctx.reply(`Saved 🌱 About page updated.\n\nPreview:\n${text.slice(0, 400)}${text.length > 400 ? '…' : ''}\n\nOpen the Mini App → About to see it live.`);
+    return;
+  }
+  // Announcement: send it to every known user's 1:1 chat.
+  awaitingAnnouncement.delete(ctx.from.id);
+  if (!isAdmin(ctx.from.id)) return ctx.reply('Only the bot owner can send announcements.');
   const text = ctx.message.text.trim();
-  if (text.length < 3) return ctx.reply('That looks too short — send /edit_about again and paste the full text.');
-  setAboutText(text);
-  await ctx.reply(`Saved 🌱 About page updated.\n\nPreview:\n${text.slice(0, 400)}${text.length > 400 ? '…' : ''}\n\nOpen the Mini App → About to see it live.`);
+  if (text.length < 3) return ctx.reply('That looks too short — send /send_announcement again and paste the full text.');
+  const announcement = formatAnnouncement(text);
+  const recipients = collectRecipients(users);
+  let sent = 0, failed = 0;
+  for (const chatId of recipients) {
+    try { await bot.telegram.sendMessage(chatId, announcement); sent += 1; }
+    catch (e) { failed += 1; console.log('announcement failed for', chatId, e.message); }
+  }
+  await ctx.reply(`Sent 🌱 ${sent} chat${sent === 1 ? '' : 's'} got the announcement.${failed ? ` ${failed} couldn't be reached (they may have blocked the bot).` : ''}`);
 });
 bot.catch((err) => console.error('bot error', err.message));
 
@@ -270,7 +471,7 @@ const app = express();
 app.use(express.json({ limit: '200kb' }));
 // No-store for app assets: the live counter once stayed broken because browsers /
 // Telegram WebView kept serving a cached pre-fix app.js after a redeploy.
-// (index.html also loads app.js/style.css/themes.js with ?v=20261117k.)
+// (index.html also loads app.js/style.css/themes.js with ?v=20261117m.)
 app.use(express.static(path.join(__dirname, 'public'), {
   maxAge: 0, etag: false,
   setHeaders(res, filePath) { if (/\.(js|css|html)$/.test(filePath)) res.set('Cache-Control', 'no-store'); },
@@ -288,6 +489,7 @@ app.post('/api/sync', (req, res) => {
     else return res.status(401).json({ ok: false, error: 'invalid initData' });
   }
   const u = getUser(userId, userId);
+  rolloverUserToday(u);
   // apiVersion is accepted but not required: v1 clients send no version, v2 sends 2.
   // Unknown fields are ignored, missing fields keep their current value (backwards compat).
   if (req.body.settings) {
@@ -314,12 +516,28 @@ app.post('/api/sync', (req, res) => {
     if (String(t.date || '') && String(t.date) < currentDay) {
       console.log('sync ignored stale today', String(t.date), 'current day', currentDay);
     } else {
-    u.today = { version: CURRENT_VERSION, date: String(t.date || u.today.date), count: Number(t.count || 0), notes: Array.isArray(t.notes) ? t.notes.slice(0, 200).map(n => ({ text: String(n.text || '').slice(0, 140), time: String(n.time || ''), shareable: typeof n.shareable === 'boolean' ? n.shareable : false })) : [] };
-    // garden aggregation, anonymous count only
-    if (u.gardenOptIn && req.body.gardenId) {
-      const g = gardens.get(String(req.body.gardenId));
-      if (g) g.countToday = u.today.count; // MVP: per-garden total is summed on read, see /api/garden
-    }
+      // v5: merge the app snapshot with bot-logged thanks the app hasn't
+      // picked up yet (mergeSync — no double-count, deleted stays deleted).
+      // Notes keep their ids (assigned deterministically when missing).
+      const appToday = migrateToday({ date: String(t.date || u.today.date), count: Number(t.count || 0), notes: Array.isArray(t.notes) ? t.notes : [] });
+      const merged = mergeSync(appToday, u.pendingBot, req.body.mergedBotIds);
+      u.today = merged.today;
+      u.pendingBot = merged.remainingPending;
+      // v5.1: the app has today's list now — record the sync day, so
+      // /recap and /share can tell "not synced yet" from "genuinely
+      // empty". Saved to data.json (survives restarts, not redeploys).
+      u.lastSyncDate = u.today.date;
+      saveSettings();
+      // Garden aggregation: this user's shareable notes join every group
+      // garden they're in. The share tick is the opt-in — only ticked
+      // notes ever appear in a garden. Deduped by note id; the garden
+      // resets every day at 03:00 (v5.1, no 7-day window).
+      const gardenIds = new Set();
+      if (Array.isArray(u.groupGardens)) for (const gid of u.groupGardens) gardenIds.add(String(gid));
+      if (req.body.gardenId) gardenIds.add(String(req.body.gardenId));
+      for (const gid of gardenIds) {
+        for (const n of u.today.notes) addGardenNote(gardens, gid, userId, { ...n, date: u.today.date });
+      }
     } // end else (non-stale today)
   }
   res.json({ ok: true, count: u.today.count });
@@ -361,7 +579,10 @@ app.get('/api/state', (req, res) => {
   if (!userId && MINI_APP_URL.includes('localhost')) userId = req.query.userId || 'preview-user';
   if (!userId) return res.status(401).json({ ok: false, error: 'invalid initData' });
   const u = getUser(userId, userId);
-  res.json({ ok: true, settings: { timezone: u.timezone, resetHour: FIXED_RESET_HOUR, resetMinute: FIXED_RESET_MINUTE, notifyHour: FIXED_NOTIFY_HOUR, notifyMinute: FIXED_NOTIFY_MINUTE, notificationsOn: u.notificationsOn, notifyOnlyIfEmpty: u.notifyOnlyIfEmpty, gardenOptIn: u.gardenOptIn, groupGardens: u.groupGardens }, today: u.today });
+  rolloverUserToday(u);
+  // pendingBot: bot-logged thanks the app hasn't picked up yet, so the
+  // app can merge them in on open (v5, /thanks).
+  res.json({ ok: true, settings: { timezone: u.timezone, resetHour: FIXED_RESET_HOUR, resetMinute: FIXED_RESET_MINUTE, notifyHour: FIXED_NOTIFY_HOUR, notifyMinute: FIXED_NOTIFY_MINUTE, notificationsOn: u.notificationsOn, notifyOnlyIfEmpty: u.notifyOnlyIfEmpty, gardenOptIn: u.gardenOptIn, groupGardens: u.groupGardens }, today: u.today, pendingBot: u.pendingBot });
 });
 
 app.get('/api/about', (req, res) => res.json({ ok: true, text: getAboutText() }));
@@ -375,29 +596,78 @@ app.post('/api/about', (req, res) => {
   res.json({ ok: true });
 });
 
-app.get('/api/garden', (req, res) => {
+app.get('/api/garden', async (req, res) => {
   const gid = String(req.query.gardenId || 'personal');
   if (gid === 'personal') {
     let total = 0; for (const u of users.values()) if (u.gardenOptIn) total += u.today.count;
     return res.json({ ok: true, gardenId: gid, countToday: total, flowers: Math.min(total, 200) });
   }
-  const g = gardens.get(gid);
-  if (!g) return res.json({ ok: true, gardenId: gid, countToday: 0, flowers: 0 });
-  return res.json({ ok: true, gardenId: gid, countToday: g.countToday, flowers: Math.min(g.countToday, 200) });
+  // Group garden (v5): only members may see it. Needs real initData (a
+  // Mini App launch) — a plain link opened in a browser has none, so it
+  // 401s, and the app tells the user to open it from the group's button.
+  const user = validateInitData(req.query.initData || '');
+  let userId = user?.id;
+  if (!userId && MINI_APP_URL.includes('localhost')) userId = req.query.userId || 'preview-user';
+  if (!userId) return res.status(401).json({ ok: false, error: 'invalid initData' });
+  if (!(await isGroupMember(gid, userId))) return res.status(403).json({ ok: false, error: 'only members of this group can see its garden' });
+  const g = getGarden(gardens, gid);
+  if (!g.title) {
+    try { const chat = await bot.telegram.getChat(gid); g.title = chat.title || ''; } catch (e) {}
+  }
+  g.members.add(userId);
+  const u = getUser(userId, userId);
+  if (!u.groupGardens.includes(gid)) { u.groupGardens.push(gid); saveSettings(); }
+  // v5.1: the garden is daily — roll it to the reader's day first, so
+  // yesterday's plants never show up in today's garden.
+  rolloverGarden(g, serverDayStr(new Date(), u.timezone));
+  pruneGarden(g);
+  const notes = g.notes.map((n) => {
+    const p = plantFor(n.userId, gid);
+    return { id: n.id, plant: p.id, emoji: p.emoji, plantName: p.name, text: n.text, time: n.time, date: n.date };
+  });
+  const myPlant = plantFor(userId, gid);
+  res.json({ ok: true, gardenId: gid, title: g.title || 'Group garden', memberCount: g.members.size, notes, myPlant: myPlant.id, plants: PLANTS });
 });
 
-// ---- Telegram command menu (what users see when they type /) ----
-// Set on every start so it stays in sync with the code — no BotFather
-// step needed. v1: only /start is listed. /recap and /edit_about are
-// owner-only and deliberately NOT listed: everyone would see them, and
-// only the owner can use them.
-const BOT_COMMANDS = [
+// Pick your plant for a group garden (v5). One per group, changeable any time.
+app.post('/api/garden/plant', async (req, res) => {
+  const user = validateInitData(req.body.initData || '');
+  let userId = user?.id;
+  if (!userId && MINI_APP_URL.includes('localhost')) userId = req.body.userId || 'preview-user';
+  if (!userId) return res.status(401).json({ ok: false, error: 'invalid initData' });
+  const gid = String(req.body.gardenId || '');
+  const plant = plantById(String(req.body.plant || ''));
+  if (!gid || gid === 'personal' || !plant) return res.status(400).json({ ok: false, error: 'bad garden or plant' });
+  if (!(await isGroupMember(gid, userId))) return res.status(403).json({ ok: false, error: 'only members of this group can see its garden' });
+  const u = getUser(userId, userId);
+  u.plantChoices[gid] = plant.id;
+  saveSettings();
+  res.json({ ok: true, plant: plant.id });
+});
+
+// ---- Telegram command menus (what users see when they type /) ----
+// Set on every start so they stay in sync with the code — no BotFather
+// step needed. v5: scoped menus — 1:1 chats get the personal commands,
+// groups get the garden ones. /edit_about, /send_announcement and /cancel stay hidden
+// (owner-only); everyone would see them otherwise.
+const PRIVATE_COMMANDS = [
   { command: 'start', description: 'Open Give Thanks and start the habit' },
+  { command: 'recap', description: 'See today’s thanks log' },
+  { command: 'thanks', description: 'Log a thanks — whatever you type after it is the note' },
+  { command: 'share', description: 'Get today’s shareable list (hidden notes stay hidden)' },
+  { command: 'seegardens', description: 'See your group gardens' },
+];
+const GROUP_COMMANDS = [
+  { command: 'garden', description: 'Open this group’s garden' },
+  { command: 'sharerecap', description: 'Share today’s shared thanks in this group' },
 ];
 
 // ---- start ----
 app.listen(PORT, () => console.log(`[give-thanks] Mini App at http://localhost:${PORT} — set MINI_APP_URL to your public URL for Telegram`));
-if (BOT_TOKEN) bot.telegram.setMyCommands(BOT_COMMANDS).then(() => console.log('[give-thanks] command menu set')).catch(e => console.error('setMyCommands', e.message));
+if (BOT_TOKEN) {
+  bot.telegram.setMyCommands(PRIVATE_COMMANDS, { scope: { type: 'all_private_chats' } }).then(() => console.log('[give-thanks] private command menu set')).catch(e => console.error('setMyCommands private', e.message));
+  bot.telegram.setMyCommands(GROUP_COMMANDS, { scope: { type: 'all_group_chats' } }).then(() => console.log('[give-thanks] group command menu set')).catch(e => console.error('setMyCommands group', e.message));
+}
 // Launch with retries: during a Render deploy the old instance may still
 // be polling when the new one starts, Telegram answers 409, and the new
 // instance gives up — the website works but the bot goes deaf (2026-11-17).

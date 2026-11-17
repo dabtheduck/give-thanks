@@ -1,5 +1,5 @@
 # Give Thanks — Full Product Spec
-**Version:** 1.0 MVP, data v4 — 17 Nov 2026 (v1: no scheduled nudge/recap; the day ends at 03:00, see §3)
+**Version:** 1.0 MVP, data v5 — 17 Nov 2026 (v5: bot commands + group garden; v1: no scheduled nudge/recap; the day ends at 03:00, see §3)
 **Platform:** Telegram Bot + Telegram Mini App
 **Audience:** Everyone. Cozy pixel art, rougher / retro-RPG feel, for guys and girls. Low cortisol throughout.
 
@@ -22,7 +22,7 @@ Each user's 1:1 chat with the bot is their identity. No username, email, or pass
 
 ### Non-goals for MVP
 - No streaks shown as a number to protect, no leaderboards, no likes, no public profiles.
-- No streak-shaming copy. Missing a day is neutral: the recap just says “No thanks logged today — fresh start tomorrow” if applicable.
+- No streak-shaming copy. Missing a day is neutral: the recap just says “No thanks logged today yet.” if applicable.
 - No medical claims. The About / Bulletin Board page is educational only.
 - No scheduled notifications and no scheduled recap in v1 (removed 2026-11-17: the server could not be trusted to have the day’s list at 03:00, so the recap is on demand from the app instead).
 
@@ -43,7 +43,7 @@ All in one Mini App, bottom tabs: Counter | Garden | Share | About
 - Timezone: auto-detected from device (`Intl.DateTimeFormat().resolvedOptions().timeZone`), editable via a dropdown of IANA zones.
 - Reset: hardcoded 03:00, in the user's timezone. No setting. The day ends at 3am, not midnight, so night owls up past midnight don't lose their day.
 - No notifications in v1. No notification settings.
-- Garden opt-in: toggle, default off. (Parked for v1 — the Garden tab is blurred with a “we’re still working on this!” card.)
+- Garden opt-in: toggle, default off. (Personal garden. Group gardens are per-group, see §3.4.)
 - Language: English for MVP.
 - Data: “Your notes live in Telegram CloudStorage on your device/account and in a temporary store on the server. Your recaps stay in your Telegram chat.” + a “Clear today's data” button.
 
@@ -75,13 +75,17 @@ Sharing is opt-in per note, not per day. Default is private.
 - This is a v3 feature, behind the `shareOutsideTelegram` flag in `lib/features.js`, default on for new installs, and migrated safely: see UPGRADES.md and `lib/migrations.js` (v2 → v3 adds `shareable: false` to old notes).
 
 ### 3.4 Garden (community, anonymous, opt-in)
-**Parked for v1 (2026-11-17).** The Garden tab stays in the app, but its content is blurred out behind a “we’re still working on this!” card. The `/garden` command is removed and the garden aggregation is dormant. The design below is kept for when it comes back.
+**Live in v5 (2026-11-17).** The Garden tab shows your personal garden by default, or a group garden when opened from a group's `/garden` link.
 - Personal Garden: if opted in, each of your thanks adds an anonymous flower / pixel plant to a shared garden. No names, no note text shown by default.
 - Group Garden: a garden just for one Telegram group.
-  - How to create: add @GiveThanksBot to a group, send `/garden` in the group, or tap the bot's “Create group garden” link. The bot posts a message in the group with a “Join this garden” button (deep link `t.me/GiveThanksBot?startgroup=garden_<group_id>` / `start=garden_<group_id>`).
-  - Who can join: only members of that group. The bot checks membership via Telegram. Joining is opt-in per person, even inside the group.
-  - What is shared: anonymous counts only, e.g. “12 thanks bloomed in this garden today”. Optionally, once a week, the bot shares one anonymous note in the group, e.g. “Someone in this garden was thankful for warm soup today”, with no name, no reply thread, no reactions counted.
-  - Leaving: leave the group, or toggle off in Settings, and your future presses stop adding to that garden. Past anonymous flowers stay anonymous.
+  - How to create: add @GiveThanksBot to a group, send `/garden` in the group. The bot posts a message in the group with a button to open the garden, plus the plain link as a fallback (a bad button URL can fail the whole send silently, so the link is the safety net).
+  - What it looks like: a cute plot of land. One plant per shared thanks, placed at a stable spot (position comes from the note's id, so the plot doesn't reshuffle). Tap a plant and its note opens in a bubble card, with a haptic pop.
+  - Who can see it: only members of that group. The server checks membership via `getChatMember` on every load; if it can't confirm, access is denied (safe default).
+  - What is shared: only thanks with the share box ticked. No names — each member picks one of 10 plant designs to represent themselves (Sunflower, Tulip, Rose, Daisy, Cactus, Fern, Mushroom, Clover, Bamboo, Hyacinth), changeable any time. A member who hasn't picked yet gets a deterministic default from their user id. The plant is the identity: somewhat anonymous, but not entirely.
+  - How long it grows: one day. The garden resets at 03:00 with the counter — a fresh garden each morning. The garden is stored in memory on the server (like today's notes) — a restart or redeploy empties it, and it rebuilds as members open the app and sync, but since it resets every day anyway, a redeploy just resets it early. The user's list of gardens and their plant choices are persisted (data.json), so a garden is re-discoverable after a restart.
+  - `/seegardens` in a 1:1 chat lists all your group gardens, with a button to open each.
+  - `/sharerecap` in a group posts today's shared thanks, each with the member's plant emoji, no names.
+  - Leaving: leave the group, and your future presses stop adding to that garden. Past shared notes stay until the garden resets at 03:00.
 - No likes, no comments, no DMs, no follower counts, no ranking. Garden view is a calm pixel field, not a feed.
 
 ### 3.5 About / Bulletin Board
@@ -110,15 +114,13 @@ You said thanks 7 times today.
 2. 13:40 — my sister called
 3. 18:05 — sun on my face
 …
-
-A fresh day starts now. No backlog, no guilt.
 ```
 
-- If 0 presses: “No thanks logged today. That's okay — fresh start tomorrow.”
+- If 0 presses: “No thanks logged today yet.”
 - Notes are listed in press order, with local time.
 - Sending the recap does NOT reset the day — the counter resets at 03:00 on next open. You can send the recap as many times as you like.
 - The recap message is the archive. Users find old days via Telegram search in that chat.
-- The recap is built from the app’s own list (CloudStorage), via POST `/api/recap` — not from the server’s ephemeral copy, which a restart can wipe. Owner-only `/recap` in chat reads the server’s copy instead (same text, no reset); it can say 0 after a restart until the app re-syncs on open.
+- The recap is built from the app’s own list (CloudStorage), via POST `/api/recap` — not from the server’s ephemeral copy, which a restart can wipe. `/recap` in chat reads the server’s copy instead (same text, no reset); it can say 0 after a restart until the app re-syncs on open. If thanks were logged in the bot chat with `/thanks` but the app hasn't picked them up yet, `/recap` says so and asks the user to open the app first, then type `/recap` again. If the app hasn't synced today at all, `/recap` doesn't claim the day is empty — it says to open the app so it syncs, then type `/recap` again.
 
 ## 6. Data & privacy
 ### 6.1 What is stored, where, for how long
@@ -128,7 +130,10 @@ A fresh day starts now. No backlog, no guilt.
 | Settings: timezone, toggles, garden opt-ins | Temporary server store, mirrored in CloudStorage | Until user changes / deletes |
 | Chat ID / user ID | Server store, to send the recap | Until user blocks the bot |
 | Recaps | Telegram chat history only | As long as Telegram keeps the chat |
-| Garden counts | Ephemeral aggregate per garden per day, no names (dormant in v1) | Until daily garden summary, then reset to count only |
+| Garden counts | Ephemeral aggregate per garden per day, no names | Until daily garden summary, then reset to count only |
+| Group garden notes | In-memory server store, one day only, no names | Resets at 03:00 with the counter; emptied on restart/redeploy, rebuilds from syncs |
+| Group garden membership + plant choices | Server `data.json` (user record: `groupGardens`, `plantChoices`) | Until user leaves the group / changes plant |
+| Last sync day | Server `data.json` (user record: `lastSyncDate`) | Until the next sync |
 
 No long-term history database. No passwords. No email.
 
@@ -142,14 +147,16 @@ No long-term history database. No passwords. No email.
 ### 6.3 Why a temporary server store is needed
 CloudStorage is client-only: only the Mini App JS can read/write it. The bot server cannot read it via the Bot API. So the app also syncs a copy to the server:
 - On each press, the Mini App saves to CloudStorage (source of truth on device), AND POSTs a lightweight sync to `/api/sync` with validated Telegram `initData`.
-- The server copy exists for owner-only `/recap` in chat. The on-demand recap button does not need it — it POSTs the app’s own list to `/api/recap` and the server just delivers it.
+- The server copy exists for `/recap` in chat, for merging `/thanks` logged in the bot chat into the app's counter on next open, and for feeding group gardens. The on-demand recap button does not need it — it POSTs the app’s own list to `/api/recap` and the server just delivers it.
 - The server store is ephemeral: in the MVP code it is an in-memory map + a `data.json` for settings only, with today's notes held in memory and overwritten by the next sync (a restart wipes it; the app re-syncs on open). In production, use a KV with TTL 36 hours (e.g. Cloudflare KV, Upstash Redis). Never store past days.
 - v1 has no scheduler (removed 2026-11-17): nothing on the server fires on a clock. The 03:00 reset is app-side (the day key changes), and a wake-up ping at 02:55 keeps the server awake around the reset so the app’s first sync of the new day is fast.
 
 ### 6.4 Group garden data
 - Garden ID = Telegram group `chat_id`.
-- Membership check via Bot API `getChatMember`.
-- Only anonymous counts are aggregated. Note text is never shared to a group garden unless the user explicitly opts into the weekly anonymous share, and even then with no name / ID.
+- Membership check via Bot API `getChatMember`, on every garden load and every plant pick. If the check fails or can't be confirmed, access is denied.
+- Only shareable (ticked) notes enter a garden. Their text IS shown in the garden (tap a plant to read it) — that's the point of the garden — but with no name, only the member's plant.
+- Daily reset at 03:00 with the counter (v5.1 — was a 7-day rolling window in v5). In-memory. A restart/redeploy empties the garden; it rebuilds from syncs — but since it resets every day anyway, a redeploy just resets it early.
+- Plant choice is per user per garden, persisted in the user record (`plantChoices`); the list of gardens a user is in (`groupGardens`) is persisted too.
 
 ## 7. Art style
 **Direction:** Cozy pixel art, rougher / retro-RPG, for everyone.
@@ -161,9 +168,15 @@ CloudStorage is client-only: only the Mini App JS can read/write it. The bot ser
 - Low cortisol visual rules: no red alerts, no badge counts, no pulsing “urgent” animation, plenty of whitespace.
 
 ## 8. Bot commands
-- `/start` — welcome, open Mini App button, explain the loop in 3 lines. The only command in the menu.
-- `/recap` — owner-only, hidden from the menu. Full instant recap from the server’s copy, now, no reset. In a group it DMs the recap to the owner (never posts it in the group).
-- `/edit_about` — owner-only, hidden from the menu. Edit the Bulletin Board text from a 1:1 chat. `/cancel` aborts it.
+Menus are scoped (v5) and set in code on every start via `setMyCommands` — no BotFather step needed.
+- **1:1 chat:** `/start` — welcome, open Mini App button, explain the loop. `/recap` — today's thanks log, from the server's copy (same text as the app's recap button, no reset). `/thanks` — log a thanks right in the chat: whatever you type after `/thanks` becomes the note (e.g. `/thanks good food` logs a thanks with the note “good food”, just like a press). `/thanks` on its own is just +1. `/share` — today's list in share format (ticked notes shown, unticked as `••• hidden •••`). `/seegardens` — list your group gardens, with a button to open each.
+- **Group chat:** `/garden` — open this group's garden (button + plain link fallback). `/sharerecap` — today's shared thanks in this group, each with the member's plant emoji, no names.
+- **Hidden, owner-only:** `/edit_about` (1:1 only), `/cancel`.
+
+`/thanks` merges into the app on next open: the bot-logged thanks live on the server (`pendingBot`, persisted to `data.json` on every `/thanks`, so they survive a server restart — a redeploy still wipes `data.json`, so redeploy just after 03:00) until the app opens and picks them up (no double-counting; a bot note deleted in the app never comes back). If `/thanks` was logged but the app hasn't opened yet, `/recap` and `/share` say so and ask the user to open the app first, then ask again. If the app hasn't synced today at all, `/recap` and `/share` don't claim the day is empty — they say to open the app so it syncs, then ask again.
+
+`/send_announcement` (owner-only, hidden from the menu) lets the owner update every user about new things. Two-step, like `/edit_about`: type the command, then send the announcement text as the next message; `/cancel` aborts. It goes to every known user's 1:1 chat — no group posts, because anyone who uses the bot in a group already has a 1:1 chat with it. The bot replies with how many chats got it (and how many couldn't be reached, e.g. they blocked the bot).
+`/thanks` and `/share` are 1:1 only — in a group they point to 1:1, so notes never leak. `/recap` in a group DMs the recap to whoever asked, never posts it in the group.
 
 The bot does not handle `web_app_data` in v1 (the recap button uses POST `/api/recap` instead).
 
@@ -191,7 +204,9 @@ None in v1. The 19:30 nudge and 03:00 recap were removed 2026-11-17: the server 
 - [ ] Note attaches to a press, shows in today's list, appears in recap.
 - [ ] Counter resets at 03:00 local time on next open; night-owl presses before 03:00 still count for that day.
 - [ ] “Send today’s recap to chat” sends the full list to the 1:1 chat, any time, and does not reset the day.
-- [ ] Garden tab shows the blurred “we’re still working on this!” card.
+- [ ] Empty day says “No thanks logged today yet.”; a day with thanks has no “A fresh day starts now” line.
+- [ ] `/thanks good food` in a 1:1 chat logs to the counter and merges into the app on next open, no double-count; `/recap` nudges to open the app first if the merge hasn't happened yet.
+- [ ] Group garden works: `/garden` in a group opens a plot, shared thanks plant, tap a plant to read its note in a bubble, plant picker works, `/seegardens` lists your gardens, `/sharerecap` posts shared thanks with plant emojis.
 - [ ] About / Bulletin Board readable, editable in public/content/about.md and via /edit_about.
 - [ ] No long-term DB: no past days stored on the server; recaps live in the Telegram chat only.
 
@@ -218,8 +233,9 @@ This is a hard requirement, not a nice-to-have. A v1.0 user must open v2.0 and s
 10. **Test the upgrade path every release.** Test matrix: v1.0 data → v2.0 code, v2.0 data → v1.0 code (must not crash, must preserve unknown fields), and offline v1.0 press → sync after upgrade.
 
 ### 13.2 Data versioning
-- Client: `gt_settings` now stores `{ version: 4, timezone, ... }` — v4 dropped `resetHour` / `notifyHour`. `gt_today_meta` stores `{ version: 4, date, count }`. Old v1 records with no `version` are treated as version 1.
-- Server: `data.json` records store `{ version: 4, ... }`. `lib/migrations.js:migrateUser()` upgrades v1 → v4, dropping the two hour fields on the v3 → v4 step.
+- Client: `gt_settings` now stores `{ version: 5, timezone, ... }` — v4 dropped `resetHour` / `notifyHour`. `gt_today_meta` stores `{ version: 5, date, count, pressHistory, adoptedBotIds }`. Old v1 records with no `version` are treated as version 1.
+- Server: `data.json` records store `{ version: 5, ... }`. `lib/migrations.js:migrateUser()` upgrades v1 → v5: notes gain stable ids (v5, deterministic from text+time for old notes), users gain `pendingBot: []` and `plantChoices: {}` (v5.1: `lastSyncDate: null`, set on every successful sync).
+- Pure modules (v5, each with its own test): `lib/recap.js` (recap/share text + staleness notice + not-synced prompt), `lib/merge.js` (bot/app merge), `lib/plants.js` (10 species + deterministic defaults), `lib/garden.js` (garden store, daily reset, dedup).
 - CloudStorage keys are namespaced and never reused for a different shape: `gt_today_notes_1` stays notes. A new feature gets a new key, e.g. `gt_garden_weekly_1`, never overwrites an old one.
 - Today's notes are still ephemeral (a new day starts at 03:00), but *settings* and *garden membership* are durable and must survive upgrades.
 

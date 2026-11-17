@@ -8,8 +8,8 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800;900&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
-<script src="themes.js?v=20261117k"></script>
-<link rel="stylesheet" href="style.css?v=20261117k">
+<script src="themes.js?v=20261117m"></script>
+<link rel="stylesheet" href="style.css?v=20261117m">
 </head>
 <body>
 <div id="loadingCover" class="loading-cover">
@@ -45,18 +45,23 @@
     <p class="sync" id="syncStatus">Saved on this device</p>
   </section>
 
-  <!-- GARDEN — parked for v1: the tab stays, the content is blurred out
-       with a "we're still working on this!" card on top. -->
+  <!-- GARDEN — v5: the tab is live now. Personal garden by default;
+       a group garden when opened from a group's /garden link. -->
   <section id="tab-garden" class="tab">
     <h2>🌸 The Garden</h2>
-    <div class="garden-soon">
-      <div class="garden-blur">
-        <p class="calm">Anonymous, opt-in. Each thanks adds a flower. No names, no likes, no ranking.</p>
-        <label class="toggle"><input type="checkbox" id="gardenOptIn"> Join the personal garden</label>
-        <div class="garden-field" id="gardenField">🌱 Your garden is waiting for its first thanks today.</div>
-        <p class="calm" id="gardenCount">0 flowers bloomed today</p>
-      </div>
-      <div class="garden-soon-card">🌱<br>we're still working on this!</div>
+    <div id="personalGarden">
+      <p class="calm">Anonymous, opt-in. Each thanks adds a flower. No names, no likes, no ranking.</p>
+      <label class="toggle"><input type="checkbox" id="gardenOptIn"> Join the personal garden</label>
+      <div class="garden-field" id="gardenField">🌱 Your garden is waiting for its first thanks today.</div>
+      <p class="calm" id="gardenCount">0 flowers bloomed today</p>
+    </div>
+    <div id="groupGarden" style="display:none">
+      <h3 id="groupGardenTitle">Group garden</h3>
+      <p class="calm" id="groupGardenStatus">Loading the garden…</p>
+      <div class="garden-plot" id="groupGardenPlot"></div>
+      <p class="calm">Tap a plant to read its thanks. Only shared thanks appear here — no names, just the plant of the person who shared it.</p>
+      <h3 class="list-heading">Your plant <span class="list-note">tap one to pick it — this is how the group tells you apart</span></h3>
+      <div class="plant-picker" id="plantPicker"></div>
     </div>
   </section>
 
@@ -87,7 +92,15 @@
     <button data-tab="share" type="button">↗ Share</button>
     <button data-tab="about" type="button">📋 About</button>
   </nav>
+  <div id="noteBubble" class="note-bubble">
+    <div class="note-bubble-card">
+      <button id="noteBubbleClose" class="note-bubble-close" type="button" aria-label="Close">×</button>
+      <div class="note-bubble-plant" id="noteBubblePlant">🌱</div>
+      <p class="note-bubble-text" id="noteBubbleText"></p>
+      <p class="fine" id="noteBubbleMeta"></p>
+    </div>
+  </div>
 </div>
-<script src="app.js?v=20261117k"></script>
+<script src="app.js?v=20261117m"></script>
 </body>
 </html>

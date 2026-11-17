@@ -66,6 +66,25 @@ Times are now fixed — recap 03:00, notification 19:30, in each user's timezone
 - Timezone is still per-user, auto-detected from the device, and still stored.
 - Scheduler: the tick now only acts at 19:30 (notify) and 03:00 (recap), once per day per user.
 
+### 9. v5 example: bot commands + group garden (2026-11-17)
+Commands (`/thanks`, `/share`, `/garden`, `/sharerecap`, `/seegardens`, `/recap` for everyone) and a live group garden, added without rebuilding v1–v4:
+- `CURRENT_VERSION` 4 → 5 in `lib/migrations.js` and `DATA_VERSION` in `public/app.js`.
+- Migration v4 → v5: notes gain stable ids — old notes get a deterministic id from text+time (same note, same id, every migration), new notes carry their own (`app-…` from the app, `bot-…` from `/thanks`). Users gain `pendingBot: []` (bot-logged thanks the app hasn't picked up yet) and `plantChoices: {}` (chosen plant per group garden). No field removed, no CloudStorage key reused. `gt_today_meta` now also stores `adoptedBotIds` (ids the app has already merged).
+- New pure modules, each with its own test: `lib/recap.js` (recap/share text + staleness notice), `lib/merge.js` (bot/app merge — no double-count, deleted stays deleted), `lib/plants.js` (10 species + deterministic defaults), `lib/garden.js` (garden store, daily reset, dedup by note id).
+- `/recap` stopped being owner-only: the admin-claim code was removed, and the recap text changed (empty day: “No thanks logged today yet.”; the “A fresh day starts now. No backlog, no guilt.” line is gone when there are thanks).
+- The garden is in-memory on the server (daily reset at 03:00) — a restart/redeploy empties it and it rebuilds from syncs. Since it resets every day anyway, a redeploy just resets it early. That is a deliberate storage decision, not a bug: the durable parts (garden membership `groupGardens`, plant choices `plantChoices`) live in `data.json` and survive restarts.
+
+### 10. v5.1 example: daily garden + not-synced recap (2026-11-17)
+- The garden dropped its 7-day rolling window for a daily reset at 03:00 (dab: "let's just have the garden reset every day"). `lib/garden.js` gained `rolloverGarden()`; the store shape gained a `date` field (in-memory only, no persisted change, no version bump).
+- Users gained `lastSyncDate` (`null` = never synced), set on every successful `/api/sync` and persisted in `data.json`. `/recap` and `/share` use `recapStatus()` (`lib/recap.js`) to tell "not synced yet" from "genuinely empty" — the first gets an "open the app to sync" prompt, the second gets "No thanks logged today yet."
+- `/thanks` now calls `saveSettings()` so `pendingBot` survives a server restart. A redeploy still wipes `data.json` — the practice is to redeploy just after 03:00.
+- No version bump (data stays v5): `lastSyncDate` is additive with a `null` default, and the garden is in-memory.
+
+### 11. v5.2 example: /send_announcement (2026-11-17)
+- Owner-only, hidden from the menu, 1:1 chats only — the owner can update every user about new things, with no group posts (anyone who uses the bot in a group already has a 1:1 chat with it). Two-step like `/edit_about`: type the command, then send the announcement text as the next message; `/cancel` aborts. The bot replies with how many chats got it and how many couldn't be reached.
+- Pure module: `lib/announce.js` (`formatAnnouncement` — the "🌱 Give Thanks — update" header — and `collectRecipients` — every known user's 1:1 chat id, deduped). The send loop itself lives in `server.js` (it calls `bot.telegram.sendMessage` per chat, with a per-chat try/catch so one blocked user never stops the rest).
+- No version bump (data stays v5): the announcement flow is transient state only (`awaitingAnnouncement`, in-memory, like `awaitingAbout`).
+
 ## Adding a feature in v2.0 — checklist
 1. Add the flag to `lib/features.js`, default off.
 2. Add one file under `lib/` or `features/`. Do not edit the counter or recap core.

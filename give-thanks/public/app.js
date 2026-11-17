@@ -1,7 +1,9 @@
 // Give Thanks — Mini App (mockup-matched rebuild)
-// DATA_VERSION 4. v1: no scheduled nudge/recap. The day ends at 03:00
+// DATA_VERSION 5. v1: no scheduled nudge/recap. The day ends at 03:00
 // (the counter resets then); the recap is on demand via the app's
-// "Send today's recap to chat" button (POST /api/recap) or owner-only /recap.
+// "Send today's recap to chat" button (POST /api/recap) or /recap.
+// v5: notes have stable ids; /thanks logged in the bot chat merges into
+// the counter on open; group gardens (7-day, one plant per shared thanks).
 // CloudStorage first (chunked notes), then POST /api/sync for the server copy.
 //
 // COUNTER BUG — why it stayed at 0 even after the todayKey fix:
@@ -15,7 +17,7 @@
 //   2. press() renders IMMEDIATELY and synchronously, then saves in the background.
 //   3. Every CloudStorage call races a 500ms timeout and falls back to localStorage.
 //   4. Every init step is individually try/catch'd; a bad load never kills the UI.
-const DATA_VERSION = 4;
+const DATA_VERSION = 5;
 const FIXED_RESET_HOUR = 3;
 const FIXED_NOTIFY_HOUR = 19;
 const FIXED_NOTIFY_MINUTE = 30;
@@ -63,8 +65,23 @@ function migrateToday(raw) {
   if (!t.date) t.date = new Date().toISOString().slice(0, 10);
   if (!Number.isInteger(t.count)) t.count = 0;
   if (!Array.isArray(t.notes)) t.notes = [];
-  t.notes = t.notes.map(n => ({ text: String(n.text || '').slice(0, 140), time: String(n.time || ''), shareable: typeof n.shareable === 'boolean' ? n.shareable : false }));
+  t.notes = t.notes.map(n => ({ text: String(n.text || '').slice(0, 140), time: String(n.time || ''), shareable: typeof n.shareable === 'boolean' ? n.shareable : false, id: String(n.id || stableNoteId(n.text, n.time)), origin: n.origin === 'bot' ? 'bot' : 'app' }));
   return t;
+}
+
+// FNV-1a, duplicated from lib/migrations.js (the app can't require server
+// code). Keep the two in sync. Used for stable note ids and garden plots.
+function hashStr(s) {
+  let h = 2166136261;
+  const str = String(s);
+  for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 16777619); }
+  return h >>> 0;
+}
+function stableNoteId(text, time) {
+  return 'n-' + hashStr(String(text || '') + '|' + String(time || '')).toString(16);
+}
+function newNoteId() {
+  return 'app-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 7);
 }
 
 // ---- dates: day ends at 03:00, not midnight ----
@@ -104,6 +121,10 @@ const state = {
   // Saved in gt_today_meta alongside the count; old installs without it
   // rebuild a safe fallback in loadToday() (notes preserved first).
   pressHistory: [],
+  // Bot-logged thanks this app has already merged in (their ids), so the
+  // next sync can tell the server to drop them from pendingBot. Saved in
+  // gt_today_meta; reset on rollover (yesterday's pending entries are gone).
+  adoptedBotIds: [],
 };
 try { state.gardenId = new URLSearchParams(location.search).get('startapp') ? new URLSearchParams(location.search).get('startapp').replace('garden_', '') : 'personal'; } catch (e) {}
 
@@ -211,6 +232,7 @@ function rolloverIfNeeded() {
   if (firstNew === -1) {
     state.today = { version: DATA_VERSION, date: today, count: 0, notes: [] };
     state.pressHistory = [];
+    state.adoptedBotIds = [];
   } else {
     const newNotes = notes.slice(firstNew);
     let newHist;
@@ -228,6 +250,7 @@ function rolloverIfNeeded() {
     }
     state.today = { version: DATA_VERSION, date: today, count: newHist.length, notes: newNotes };
     state.pressHistory = newHist;
+    state.adoptedBotIds = [];
   }
   saveTodayBackground();
   syncToServer();
@@ -250,12 +273,17 @@ async function loadToday() {
         } else {
           state.pressHistory = null;
         }
+        if (Array.isArray(rawMeta.adoptedBotIds)) state.adoptedBotIds = rawMeta.adoptedBotIds.map(String);
+        else state.adoptedBotIds = [];
         state.today.notes = [];
         for (let i = 1; i <= 10; i++) {
           const chunk = await csGet('gt_today_notes_' + i);
           if (!chunk) break;
           try { state.today.notes.push.apply(state.today.notes, JSON.parse(chunk)); } catch (e) {}
         }
+        // Old installs saved notes without ids — give them stable ones so
+        // the merge and the garden can tell notes apart.
+        state.today.notes = state.today.notes.map(n => ({ text: String(n.text || '').slice(0, 140), time: String(n.time || ''), shareable: typeof n.shareable === 'boolean' ? n.shareable : false, id: String(n.id || stableNoteId(n.text, n.time)), origin: n.origin === 'bot' ? 'bot' : 'app' }));
         if (state.pressHistory === null) {
           // Old install, no saved history: notes first, count-only presses
           // last, so an undo after reload takes a bare press off before
@@ -269,9 +297,11 @@ async function loadToday() {
         state.today.date = storedDate;
         render();
         rolloverIfNeeded();
-        // Re-sync on open: the server's today is ephemeral (a Render
-        // restart wipes it), so the app re-sends what it holds. This is
-        // what heals the server after a redeploy or a failed sync.
+        // Merge any /thanks logged in the bot chat, then re-sync: the
+        // server's today is ephemeral (a Render restart wipes it), so the
+        // app re-sends what it holds. This is what heals the server after
+        // a redeploy or a failed sync.
+        await fetchServerState();
         syncToServer();
         return;
       } catch (e) {
@@ -281,15 +311,20 @@ async function loadToday() {
   } catch (e) { /* keep defaults, never crash */ }
   state.today = { version: DATA_VERSION, date: state.today.date, count: 0, notes: [] };
   state.pressHistory = [];
+  state.adoptedBotIds = [];
   saveTodayBackground();
   render();
+  // Even a fresh install may have /thanks waiting on the server (typed in
+  // the bot chat before the app was ever opened) — merge them in.
+  await fetchServerState();
+  syncToServer();
 }
 function saveTodayBackground() {
   // Fire-and-forget: the UI already updated. A slow/failed save must never
   // roll back or hide the count.
   (async () => {
     try {
-      await csSet('gt_today_meta', JSON.stringify({ version: DATA_VERSION, date: state.today.date, count: state.today.count, pressHistory: state.pressHistory }));
+      await csSet('gt_today_meta', JSON.stringify({ version: DATA_VERSION, date: state.today.date, count: state.today.count, pressHistory: state.pressHistory, adoptedBotIds: state.adoptedBotIds }));
       const chunks = []; let cur = [];
       for (const n of state.today.notes) {
         const test = cur.concat([n]);
@@ -364,6 +399,41 @@ async function sendRecapToChat() {
   }
 }
 
+// ---- Merge bot-logged thanks (/thanks) into the app's counter (v5) ----
+// The bot holds thanks typed in the 1:1 chat until the app opens. On
+// open, /api/state returns them as pendingBot; each one joins the local
+// counter (note -> notes + pressHistory true; bare -> pressHistory false)
+// and its id goes into adoptedBotIds, so the next sync tells the server
+// to drop it from pending. No double-counting, and a bot note deleted
+// in the app never comes back.
+async function fetchServerState() {
+  if (!tg || !tg.initData) return;
+  try {
+    const ctrl = new AbortController();
+    setTimeout(() => { try { ctrl.abort(); } catch (e) {} }, 90000);
+    const res = await fetch('/api/state?initData=' + encodeURIComponent(tg.initData), { signal: ctrl.signal });
+    if (!res.ok) return;
+    const j = await res.json();
+    const pending = Array.isArray(j.pendingBot) ? j.pendingBot : [];
+    if (!pending.length) return;
+    let changed = false;
+    for (const e of pending) {
+      if (!e || !e.id) continue;
+      if (state.adoptedBotIds.includes(String(e.id))) continue;
+      if (e.text) {
+        state.today.notes.push({ text: String(e.text).slice(0, 140), time: String(e.time || ''), shareable: false, id: String(e.id), origin: 'bot' });
+        state.pressHistory.push(true);
+      } else {
+        state.pressHistory.push(false);
+      }
+      state.today.count += 1;
+      state.adoptedBotIds.push(String(e.id));
+      changed = true;
+    }
+    if (changed) { saveTodayBackground(); render(); }
+  } catch (e) { /* offline — the /recap nudge covers it; merge on next open */ }
+}
+
 // ---- sync to server (background only, 5s timeout, never blocks UI) ----
 function syncToServer() {
   try {
@@ -374,7 +444,7 @@ function syncToServer() {
     setTimeout(() => { try { ctrl.abort(); } catch (e) {} }, 90000);
     fetch('/api/sync', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: ctrl.signal,
-      body: JSON.stringify({ apiVersion: DATA_VERSION, initData: (tg && tg.initData) || '', today: state.today, settings: state.settings, gardenId: state.gardenId }),
+      body: JSON.stringify({ apiVersion: DATA_VERSION, initData: (tg && tg.initData) || '', today: state.today, settings: state.settings, gardenId: state.gardenId, mergedBotIds: state.adoptedBotIds }),
     }).then((res) => { if (res.ok) setText('syncStatus', 'Saved ✓ synced for recap'); else setText('syncStatus', 'Saved on this device — will sync when online'); })
       .catch(() => setText('syncStatus', 'Saved on this device — will sync when online'));
   } catch (e) { setText('syncStatus', 'Saved on this device — will sync when online'); }
@@ -440,8 +510,146 @@ function render() {
     setText('gardenCount', state.today.count + ' flowers bloomed today (personal view)');
     const field = el('gardenField');
     if (field) field.textContent = state.today.count ? '🌸 '.repeat(Math.min(state.today.count, 30)) : '🌱 Your garden is waiting for its first thanks today.';
+    renderGardenTab();
     renderSharePreview();
   } catch (e) { showError('Something went wrong showing your thanks — try pressing again.'); }
+}
+
+// ---- Group garden (v5, daily in v5.1) ----
+// A plot of land, one plant per shared thanks. It resets every day at
+// 03:00 with the counter (dab, 2026-11-17) — a fresh garden each morning,
+// no lost week of plants when the server restarts.
+// Tap a plant to read its note in a bubble (with a haptic pop).
+// Each member picks one of 10 plant designs to represent themselves.
+// Keep the fallback list in sync with lib/plants.js; the server sends
+// the real list with the garden data.
+const GARDEN_PLANTS_FALLBACK = [
+  { id: 'sunflower', emoji: '🌻', name: 'Sunflower' },
+  { id: 'tulip', emoji: '🌷', name: 'Tulip' },
+  { id: 'rose', emoji: '🌹', name: 'Rose' },
+  { id: 'daisy', emoji: '🌼', name: 'Daisy' },
+  { id: 'cactus', emoji: '🌵', name: 'Cactus' },
+  { id: 'fern', emoji: '🌿', name: 'Fern' },
+  { id: 'mushroom', emoji: '🍄', name: 'Mushroom' },
+  { id: 'clover', emoji: '🍀', name: 'Clover' },
+  { id: 'bamboo', emoji: '🎋', name: 'Bamboo' },
+  { id: 'hyacinth', emoji: '🪻', name: 'Hyacinth' },
+];
+const groupGarden = { title: '', notes: [], myPlant: '', plants: GARDEN_PLANTS_FALLBACK, memberCount: 0, loaded: false, error: '' };
+
+async function loadGarden() {
+  if (state.gardenId === 'personal') { renderGardenTab(); return; }
+  if (!tg || !tg.initData) {
+    // Opened from a plain link, not as a Mini App — no initData, so the
+    // server can't confirm membership. Tell them how to open it properly.
+    groupGarden.error = 'Open this garden from the button in your group chat — Telegram needs to confirm you’re a member.';
+    groupGarden.loaded = false;
+    renderGardenTab();
+    return;
+  }
+  try {
+    const res = await fetch('/api/garden?gardenId=' + encodeURIComponent(state.gardenId) + '&initData=' + encodeURIComponent(tg.initData));
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error((j && j.error) || 'could not load the garden');
+    groupGarden.title = j.title || 'Group garden';
+    groupGarden.notes = Array.isArray(j.notes) ? j.notes : [];
+    groupGarden.myPlant = j.myPlant || '';
+    groupGarden.plants = Array.isArray(j.plants) && j.plants.length ? j.plants : GARDEN_PLANTS_FALLBACK;
+    groupGarden.memberCount = j.memberCount || 0;
+    groupGarden.loaded = true;
+    groupGarden.error = '';
+  } catch (e) {
+    groupGarden.error = String((e && e.message) || e || 'Couldn’t load the garden — try again in a bit.');
+    groupGarden.loaded = false;
+  }
+  renderGardenTab();
+}
+
+function gardenPlantPos(id) {
+  // Deterministic position per note id, so the plot doesn't reshuffle on
+  // every render. Left 4–88%, top 6–82%, size 26–44px.
+  const h = hashStr(id);
+  return { left: 4 + (h % 85), top: 6 + (Math.floor(h / 85) % 77), size: 26 + (h % 19) };
+}
+
+function renderGardenTab() {
+  const personal = el('personalGarden');
+  const group = el('groupGarden');
+  if (!personal || !group) return;
+  const isGroup = state.gardenId !== 'personal';
+  personal.style.display = isGroup ? 'none' : '';
+  group.style.display = isGroup ? '' : 'none';
+  if (!isGroup) return;
+  setText('groupGardenTitle', groupGarden.title || 'Group garden');
+  const status = el('groupGardenStatus');
+  if (groupGarden.error) { if (status) status.textContent = groupGarden.error; }
+  else if (groupGarden.loaded) { if (status) status.textContent = groupGarden.notes.length + ' shared thanks growing here today · ' + groupGarden.memberCount + ' member' + (groupGarden.memberCount === 1 ? '' : 's'); }
+  else if (status) status.textContent = 'Loading the garden…';
+  const plot = el('groupGardenPlot');
+  if (plot) {
+    plot.innerHTML = '';
+    if (groupGarden.loaded && !groupGarden.notes.length) {
+      plot.innerHTML = '<div class="garden-empty">🌱 Nothing planted yet — tap + thanks in the app and tick share to plant the first one.</div>';
+    } else {
+      for (const n of groupGarden.notes) {
+        const pos = gardenPlantPos(n.id);
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'garden-plant';
+        b.style.left = pos.left + '%';
+        b.style.top = pos.top + '%';
+        b.style.fontSize = pos.size + 'px';
+        b.textContent = n.emoji || '🌱';
+        b.setAttribute('aria-label', 'A shared thanks');
+        b.addEventListener('click', () => openNoteBubble(n));
+        plot.appendChild(b);
+      }
+    }
+  }
+  const picker = el('plantPicker');
+  if (picker) {
+    picker.innerHTML = '';
+    for (const p of groupGarden.plants) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'plant-pick' + (p.id === groupGarden.myPlant ? ' selected' : '');
+      b.textContent = p.emoji;
+      b.title = p.name;
+      b.setAttribute('aria-label', p.name);
+      b.addEventListener('click', () => pickPlant(p.id));
+      picker.appendChild(b);
+    }
+  }
+}
+
+function openNoteBubble(note) {
+  // Haptic pop + a bubble card with the note. Satisfying, like popping a bubble.
+  try { if (tg && tg.HapticFeedback) tg.HapticFeedback.impactOccurred('medium'); } catch (e) {}
+  const bubble = el('noteBubble');
+  if (!bubble) return;
+  setText('noteBubblePlant', note.emoji || '🌱');
+  setText('noteBubbleText', note.text || '');
+  setText('noteBubbleMeta', (note.plantName || 'A plant') + (note.date ? ' · ' + note.date : '') + (note.time ? ' · ' + note.time : ''));
+  bubble.classList.add('open');
+}
+
+function closeNoteBubble() {
+  const bubble = el('noteBubble');
+  if (bubble) bubble.classList.remove('open');
+}
+
+async function pickPlant(plantId) {
+  if (!tg || !tg.initData) return;
+  groupGarden.myPlant = plantId;
+  renderGardenTab();
+  try { if (tg && tg.HapticFeedback) tg.HapticFeedback.impactOccurred('light'); } catch (e) {}
+  try {
+    const res = await fetch('/api/garden/plant', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ initData: tg.initData, gardenId: state.gardenId, plant: plantId }),
+    });
+    if (res.ok) loadGarden();
+  } catch (e) {}
 }
 function buildShareText() {
   const lines = ['🌱 Give Thanks — ' + state.today.date, '', 'I said thanks ' + state.today.count + ' time' + (state.today.count === 1 ? '' : 's') + ' today.', ''];
@@ -579,7 +787,7 @@ function press(noteText) {
   // Render FIRST, synchronously — never let storage/sync delay the visible count.
   state.pressHistory.push(!!noteText);
   state.today.count += 1;
-  if (noteText) state.today.notes.push({ text: noteText.slice(0, 140), time: timeNow(), shareable: false });
+  if (noteText) state.today.notes.push({ text: noteText.slice(0, 140), time: timeNow(), shareable: false, id: newNoteId(), origin: 'app' });
   const btn = el('pressBtn');
   if (btn) { btn.classList.remove('pop'); void btn.offsetWidth; btn.classList.add('pop'); }
   render();
@@ -593,6 +801,10 @@ function switchTab(name) {
   if (btn) btn.classList.add('active');
   const tab = el('tab-' + name);
   if (tab) tab.classList.add('active');
+  closeNoteBubble();
+  // Opening the garden refreshes it, so a plant picked or a thanks
+  // shared since last time shows up straight away.
+  if (name === 'garden') loadGarden();
 }
 
 // ---- LISTENERS FIRST: attached before any async init, so a load failure
@@ -647,6 +859,10 @@ function attachListeners() {
   const shareArt = el('shareArtBtn'); if (shareArt) shareArt.addEventListener('click', shareAsArt);
   const copyShare = el('copyShareBtn');
   if (copyShare) copyShare.addEventListener('click', async () => { try { await navigator.clipboard.writeText(buildShareText()); alert('Copied'); } catch (e) { alert(buildShareText()); } });
+  const bubble = el('noteBubble');
+  if (bubble) bubble.addEventListener('click', (e) => { if (e.target === bubble) closeNoteBubble(); });
+  const bubbleClose = el('noteBubbleClose');
+  if (bubbleClose) bubbleClose.addEventListener('click', closeNoteBubble);
 }
 attachListeners();
 render();
@@ -657,6 +873,7 @@ render();
   try { await loadAbout(); } catch (e) {}
   try { await loadSettings(); } catch (e) {}
   try { state.today.date = todayKey(); await loadToday(); } catch (e) {}
+  try { if (state.gardenId !== 'personal') await loadGarden(); } catch (e) {}
   try { render(); } catch (e) {}
   hideLoading();
 })();

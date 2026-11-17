@@ -46,10 +46,23 @@ h3{font-family:"Space Mono","Courier New",monospace;margin:0 0 8px;font-size:16p
 .share-btn{background:var(--sienna);margin-top:14px;box-shadow:0 2px 8px rgba(160,82,45,.25)}
 .recap-btn{background:var(--deep);margin-top:10px;box-shadow:0 2px 8px rgba(30,58,42,.22)}
 .recap-btn:disabled{opacity:.55;cursor:default}
-/* Garden — parked for v1: content blurred, "we're still working on this!" card on top. */
-.garden-soon{position:relative}
-.garden-blur{filter:blur(6px);pointer-events:none;user-select:none;opacity:.75}
-.garden-soon-card{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background:var(--card);border:1px solid var(--line);border-radius:16px;box-shadow:0 4px 16px rgba(30,42,34,.12);padding:22px 20px;text-align:center;font-family:"Space Mono","Courier New",monospace;font-size:16px;font-weight:700;color:var(--deep);width:min(86%,320px)}
+/* Garden — v5: the tab is live. Personal garden by default, group garden
+   when opened from a group's /garden link. */
+.garden-plot{position:relative;min-height:280px;background:linear-gradient(180deg,#EAF3E6 0%,#DCEBCF 55%,#C9DFC0 100%);border:1px solid #D6E8CF;border-radius:20px;overflow:hidden;margin:12px 0}
+.garden-plot::after{content:"";position:absolute;left:0;right:0;bottom:0;height:24px;background:#B99B6B;opacity:.3;border-radius:0 0 20px 20px;pointer-events:none}
+.garden-plant{position:absolute;background:none;border:0;padding:4px;cursor:pointer;line-height:1;transform:translate(-50%,-50%);transition:transform .15s ease}
+.garden-plant:active{transform:translate(-50%,-50%) scale(1.3)}
+.garden-empty{padding:24px 18px;text-align:center;color:var(--muted);font-size:14px;line-height:1.55}
+.plant-picker{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0 4px}
+.plant-pick{font-size:26px;padding:8px 10px;background:var(--card);border:1px solid var(--line);border-radius:12px;cursor:pointer}
+.plant-pick.selected{outline:2px solid var(--forest);background:var(--sage-soft)}
+.note-bubble{position:fixed;inset:0;background:rgba(30,42,34,.35);display:none;align-items:center;justify-content:center;z-index:40;padding:20px}
+.note-bubble.open{display:flex}
+.note-bubble-card{position:relative;background:var(--card);border:1px solid var(--line);border-radius:20px;padding:26px 20px 20px;max-width:340px;width:100%;text-align:center;box-shadow:0 8px 30px rgba(30,42,34,.2);animation:bubblepop .22s ease}
+@keyframes bubblepop{0%{transform:scale(.85);opacity:0}100%{transform:scale(1);opacity:1}}
+.note-bubble-plant{font-size:56px}
+.note-bubble-text{font-size:17px;line-height:1.5;margin:12px 0 6px}
+.note-bubble-close{position:absolute;top:8px;right:12px;background:none;border:none;font-size:24px;color:var(--muted);cursor:pointer;padding:4px 8px;border-radius:8px}
 .hint,.calm{color:var(--muted);font-size:14px;line-height:1.55}
 .list-heading{margin:20px 0 4px;font-size:15px}
 .list-note{font-family:"Nunito",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;font-weight:400;font-size:12px;color:var(--stone);letter-spacing:0}

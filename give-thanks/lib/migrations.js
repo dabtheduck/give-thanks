@@ -11,14 +11,36 @@
 //     both in the user's timezone (timezone is still per-user, from device).
 //     v4 migration drops resetHour / notifyHour — the only fields ever removed,
 //     by explicit user decision 2026-11-17. All other unknown fields are kept.
+// v5 (2026-11-17): notes gain stable ids (needed so /thanks logged in the
+//     bot chat can merge into the app's counter without double-counting or
+//     resurrecting deleted notes). Old notes get a deterministic id from
+//     text+time, so the same note always gets the same id. Users gain
+//     pendingBot (bot-logged thanks the app hasn't picked up yet) and
+//     plantChoices (their chosen plant species per group garden).
 
-const CURRENT_VERSION = 4;
+const CURRENT_VERSION = 5;
 
 // Fixed schedule (local time, per-user timezone). No settings, no env override.
 const FIXED_RESET_HOUR = 3;
 const FIXED_RESET_MINUTE = 0;
 const FIXED_NOTIFY_HOUR = 19;
 const FIXED_NOTIFY_MINUTE = 30;
+
+// FNV-1a, tiny and deterministic. The Mini App duplicates this (it can't
+// require server code); keep the two in sync. Also in lib/plants.js.
+function hashStr(s) {
+  let h = 2166136261;
+  const str = String(s);
+  for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 16777619); }
+  return h >>> 0;
+}
+
+// Stable id for a note that has none: deterministic from its content, so
+// migrating the same note twice gives the same id (never random — a random
+// id assigned on every read would break dedup in the garden and the merge).
+function stableNoteId(text, time) {
+  return 'n-' + hashStr(String(text || '') + '|' + String(time || '')).toString(16);
+}
 
 function migrateSettings(raw) {
   const s = { ...(raw || {}) };
@@ -58,7 +80,16 @@ function migrateToday(raw) {
   if (!t.date) t.date = new Date().toISOString().slice(0, 10);
   if (!Number.isInteger(t.count)) t.count = 0;
   if (!Array.isArray(t.notes)) t.notes = [];
-  t.notes = t.notes.slice(0, 200).map(n => ({ text: String(n.text || '').slice(0, 140), time: String(n.time || ''), shareable: typeof n.shareable === 'boolean' ? n.shareable : false }));
+  t.notes = t.notes.slice(0, 200).map(n => ({
+    text: String(n.text || '').slice(0, 140),
+    time: String(n.time || ''),
+    shareable: typeof n.shareable === 'boolean' ? n.shareable : false,
+    // v5: stable id, so the app and the server can tell the same note apart
+    // from a new one (merge, garden dedup, delete). Old notes get a
+    // deterministic id from their content; new notes carry their own.
+    id: String(n.id || stableNoteId(n.text, n.time)),
+    origin: n.origin === 'bot' ? 'bot' : 'app',
+  }));
   return t;
 }
 
@@ -77,8 +108,16 @@ function migrateUser(raw) {
   delete u.resetHour;
   delete u.notifyHour;
   if (u.today) u.today = migrateToday(u.today);
+  // v5: bot-logged thanks waiting for the app to pick them up, and the
+  // user's chosen plant per group garden. Both default empty.
+  if (!Array.isArray(u.pendingBot)) u.pendingBot = [];
+  if (!u.plantChoices || typeof u.plantChoices !== 'object' || Array.isArray(u.plantChoices)) u.plantChoices = {};
+  // v5.1: the app-day of the last successful /api/sync (YYYY-MM-DD, in the
+  // user's timezone). Lets /recap and /share tell "the app hasn't synced
+  // today yet" apart from "the day is genuinely empty". Null = never synced.
+  if (typeof u.lastSyncDate !== 'string') u.lastSyncDate = null;
   u.version = CURRENT_VERSION;
   return u;
 }
 
-module.exports = { CURRENT_VERSION, migrateSettings, migrateToday, migrateUser, FIXED_RESET_HOUR, FIXED_RESET_MINUTE, FIXED_NOTIFY_HOUR, FIXED_NOTIFY_MINUTE };
+module.exports = { CURRENT_VERSION, migrateSettings, migrateToday, migrateUser, stableNoteId, hashStr, FIXED_RESET_HOUR, FIXED_RESET_MINUTE, FIXED_NOTIFY_HOUR, FIXED_NOTIFY_MINUTE };
